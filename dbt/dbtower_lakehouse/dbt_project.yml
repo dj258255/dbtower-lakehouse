@@ -1,0 +1,26 @@
+name: "dbtower_lakehouse"
+version: "0.1.0"
+config-version: 2
+
+profile: "dbtower_lakehouse"
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# 변환 모델은 Phase 2(누적 스냅샷 → 일간 델타). 지금은 구조만 잡아둔다.
+# MinIO의 raw parquet를 DuckDB httpfs로 직독한다.
+models:
+  dbtower_lakehouse:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

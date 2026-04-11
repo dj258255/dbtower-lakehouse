@@ -1,0 +1,18 @@
+# dbt-duckdb 프로파일. DuckDB가 httpfs(S3) 확장으로 MinIO의 parquet를 직독한다.
+# 자격증명은 환경변수로(리포에 비밀 안 박음). 값은 .env / compose와 동일.
+dbtower_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "dbtower_lakehouse.duckdb"
+      extensions:
+        - httpfs
+        - parquet
+      settings:
+        s3_region: "{{ env_var('S3_REGION', 'us-east-1') }}"
+        s3_endpoint: "{{ env_var('S3_ENDPOINT_HOSTPORT', 'localhost:19000') }}"
+        s3_access_key_id: "{{ env_var('S3_ACCESS_KEY', 'dbtower') }}"
+        s3_secret_access_key: "{{ env_var('S3_SECRET_KEY', 'dbtower1234') }}"
+        s3_use_ssl: false
+        s3_url_style: "path"

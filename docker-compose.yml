@@ -1,0 +1,107 @@
+# Airflow (LocalExecutor) — 경량 스캐폴드.
+#
+# 선택(docs/ROADMAP.md Phase 0):
+# - CeleryExecutor(공식 compose 기본)는 Redis+워커로 무겁다 → LocalExecutor.
+#   LocalExecutor는 스케줄러 프로세스 안에서 태스크를 병렬 실행하므로
+#   Redis·별도 워커가 필요 없다(단일 노드·일 배치 규모에 충분).
+# - Airflow 메타DB는 전용 postgres 하나(airflow-postgres)로 격리한다.
+#   DBTower 메타 PG(원천)와 물리 분리 — 관제 DB를 오염시키지 않는다.
+# - 원천(dbtower-postgres)·싱크(dbtower-minio)는 dbtower_default 네트워크에
+#   external로 붙어 재사용한다(중복 스택 금지).
+#
+# 사용: cp .env.example .env  &&  docker compose up -d
+# UI: http://localhost:8080 (airflow / airflow)
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.4-python3.12
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    # backfill 폭주 방지 — 병렬·활성 런 상한(Phase 1 함정 방어).
+    AIRFLOW__CORE__PARALLELISM: "4"
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    # 추가 런타임 패키지(원천 PG·MinIO·parquet). 이미지 재빌드 없이 얹는다.
+    _PIP_ADDITIONAL_REQUIREMENTS: "pyarrow==18.1.0 psycopg2-binary==2.9.10 boto3==1.35.90 duckdb==1.1.3"
+    # extract 패키지가 원천/싱크를 컨테이너 호스트명으로 찾도록 덮어쓴다.
+    SRC_PG_HOST: dbtower-postgres
+    SRC_PG_PORT: "5432"
+    SRC_PG_DB: dbtower
+    SRC_PG_USER: postgres
+    SRC_PG_PASSWORD: dbtower1234
+    S3_ENDPOINT: http://dbtower-minio:9000
+    S3_ACCESS_KEY: dbtower
+    S3_SECRET_KEY: dbtower1234
+    S3_BUCKET: lakehouse
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./extract:/opt/airflow/extract
+    - ./logs:/opt/airflow/logs
+    - ./dbt:/opt/airflow/dbt
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-postgres:
+      condition: service_healthy
+
+services:
+  airflow-postgres:
+    image: postgres:16
+    container_name: lakehouse-airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: lakehouse-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username airflow --password airflow \
+          --firstname a --lastname b --role Admin --email a@b.c || true
+    restart: "no"
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: lakehouse-airflow-scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: lakehouse-airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  airflow-db:
+
+# dbtower 데모 스택 네트워크를 재사용해 원천 PG·MinIO에 붙는다.
+networks:
+  default:
+    name: dbtower_default
+    external: true

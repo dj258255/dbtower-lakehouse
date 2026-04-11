@@ -1,0 +1,11 @@
+# Extract & Load 파이프라인 런타임 의존성.
+# Airflow는 docker-compose의 apache/airflow 이미지가 이미 포함하므로 여기선 제외
+# (버전 충돌 방지 — Airflow 이미지에 얹을 추가 패키지만 명시).
+pyarrow==18.1.0
+psycopg2-binary==2.9.10
+boto3==1.35.90
+duckdb==1.1.3
+
+# dbt는 Phase 2에서 본격 사용. 구조만 잡아둔다.
+dbt-core==1.9.1
+dbt-duckdb==1.9.1
