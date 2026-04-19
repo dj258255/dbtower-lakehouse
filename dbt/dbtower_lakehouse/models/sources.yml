@@ -1,28 +1,31 @@
-# raw 레이어 소스 선언(Phase 1 산출물). 모델 구현은 Phase 2.
-# DuckDB에서 s3 glob으로 파티션 전체를 읽는 패턴:
-#   read_parquet('s3://lakehouse/raw/query_snapshot/dt=*/instance_id=*/*.parquet',
-#                 hive_partitioning=1)
+# raw 레이어 소스 선언(Phase 1 산출물). 모델 구현은 Phase 2(이 편).
+# dbt-duckdb는 external_location을 read_parquet 식으로 확장해 source()를 MinIO에 직결한다.
+# httpfs/parquet 확장과 s3 설정은 profiles.yml에서 로드된다.
 version: 2
 
 sources:
   - name: raw
     description: "Airflow snapshot_offload DAG가 MinIO에 적재한 원본 스냅샷(파티션 parquet)."
     meta:
-      s3_glob: "s3://lakehouse/raw/query_snapshot/dt=*/instance_id=*/*.parquet"
+      external_location: >-
+        read_parquet(
+          's3://lakehouse/raw/query_snapshot/dt=*/instance_id=*/*.parquet',
+          hive_partitioning = 1
+        )
     tables:
       - name: query_snapshot
         description: >
           DBTower 메타 PG query_snapshot의 하루치 스냅샷. calls/total_time_ms는
-          서버 기동 이후 누적 카운터(코드·실측 확인) — 일간 델타는 Phase 2에서 계산한다.
+          서버 기동 이후 누적 카운터(코드·실측 확인) — 일간 델타는 이 편(Phase 2)에서 계산한다.
         columns:
           - name: id
-            description: "원천 PK(감사·중복 추적용)."
+            description: "원천 PK(감사·중복 추적용). 스냅샷마다 새로 발번되어 계열 식별자는 아님."
           - name: instance_id
             description: "database_instance FK. 파티션 키."
           - name: captured_at
             description: "수집 시각(UTC). 같은 값이 한 배치."
           - name: query_id
-            description: "쿼리 지문 해시(최대 64자)."
+            description: "쿼리 지문 해시(최대 64자). 원천에서 지문 충돌이 관측됨(같은 지문에 복수 누적 계열)."
           - name: calls
             description: "누적 호출수(구간값 아님)."
           - name: total_time_ms

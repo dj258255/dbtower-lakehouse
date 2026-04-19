@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: stg_query_snapshot
+    description: >
+      raw query_snapshot 정규화 레이어. (instance_id, query_id, dt, captured_at)
+      단위로 누적값을 SUM 해 지문 충돌·중복 계열을 하나의 단조 누적 계열로 접는다.
+    columns:
+      - name: instance_id
+        description: "database_instance FK(파티션 키)."
+        tests:
+          - not_null
+      - name: query_id
+        description: "쿼리 지문 해시."
+        tests:
+          - not_null
+      - name: dt
+        description: "논리 날짜(UTC, date). 파티션 키."
+        tests:
+          - not_null
+      - name: captured_at
+        description: "수집 시각(UTC)."
+        tests:
+          - not_null
+      - name: calls
+        description: "지문 단위로 합산한 누적 호출수(단조 비감소)."
+        tests:
+          - not_null
+      - name: total_time_ms
+        description: "지문 단위로 합산한 누적 총 실행시간 ms."
+        tests:
+          - not_null

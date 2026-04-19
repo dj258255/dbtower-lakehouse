@@ -73,9 +73,85 @@
 - 서버커서(named cursor, itersize 50,000)로 결과 전체를 메모리에 올리지 않는다.
 - 운영 대상 DB(mysql/oracle 등)에는 접근하지 않음 — 관측 전용 메타 PG에서만 추출.
 
-## 4. 잔여 (정직)
+## 4. Phase 2 — dbt 변환 (누적 → 일간 델타)
+
+실측 환경 주의: dbt-core 1.11는 python3.14에서 mashumaro 직렬화 오류로 뜨지 않아,
+`.venv`를 python3.12로 재구성해 dbt-duckdb 1.10.1을 설치했다(추출 의존성 동일 재설치).
+dbt는 `dbt/dbtower_lakehouse`에서 `--profiles-dir .`로 실행(profiles.yml 동거).
+
+### 4-1. 모델 계층
+
+| 모델 | 물질화 | 역할 |
+|---|---|---|
+| `stg_query_snapshot` | view | raw parquet 직독 + (instance,query,dt,captured_at) SUM 집계로 지문 충돌·중복 계열을 단일 단조 누적 계열로 접음 |
+| `fct_query_daily` | table | (instance,query,dt)별 하루 first-vs-last 차분 + `GREATEST(0,…)` 리셋 클램프 → delta_calls/delta_total_time_ms/avg_latency_ms |
+| `mart_query_regression` | table | 첫 활동일 대비 마지막 활동일 평균 지연이 악화된 쿼리 랭킹 |
+
+### 4-2. 핵심 함정 — 누적 카운터 + 지문 충돌 (실측)
+
+- raw를 시간순으로 늘어놓으면 `calls`가 302→55→302→56… 처럼 감소가 섞여 가짜 리셋으로 보인다.
+  원인: **(instance_id, query_id, captured_at) 중복 12,743키** — 같은 지문(`query_id`)에 둘 이상의
+  누적 계열이 얽혀 있다(예: "SHOW REPLICA STATUS"가 calls=302 계열과 55 계열로 동시 존재,
+  같은 query_text·다른 id). id는 전역 PK라 계열 식별자가 못 된다.
+- **해법**: staging에서 `captured_at`별로 누적값을 SUM. 단조 비감소 계열들의 합도 단조 비감소이므로
+  지문 단위 '총 활동'의 누적 계열이 복원된다.
+- **방식 선택**: 하루 first-vs-last(양 끝 차분)를 택함 — DBTower `ComparisonService`의
+  `Math.max(0, end.calls - start.calls)`와 동일 원리라 교차검증도 된다. 대안인 '인접 스냅샷 양의 델타
+  합산'(Prometheus rate 방식)은 SUM-dedup 뒤 쿼리가 스냅샷 간 사라졌다 재등장할 때 유령 증가분을
+  과대계상한다(실측 총 delta_calls 22,264,704 vs first-vs-last 3,126,579). 그래서 first-vs-last 채택.
+- **리셋 클램프 동작**: SUM-dedup 후에도 순리셋(하루 last < first) 그레인 **219개** 존재 →
+  `GREATEST(0,…)`로 0에 클램프. `fct_query_daily.delta_calls` 최솟값 = **0**(음수 0건).
+
+### 4-3. dbt run / test (실측 로그)
+
+```
+$ .venv/bin/dbt run --profiles-dir .
+  1 of 3 OK view  main.stg_query_snapshot ...... [OK 0.06s]
+  2 of 3 OK table main.fct_query_daily ......... [OK 0.27s]
+  3 of 3 OK table main.mart_query_regression ... [OK 0.02s]
+  Done. PASS=3 WARN=0 ERROR=0 SKIP=0 TOTAL=3
+
+$ .venv/bin/dbt test --profiles-dir .
+  Done. PASS=18 WARN=0 ERROR=0 SKIP=0 TOTAL=18
+```
+
+테스트 18개 = not_null 14 + relationships 1(fct.instance_id → stg) + 커스텀 singular 3
+(`assert_fct_delta_non_negative` = 누적 델타 ≥ 0, `assert_stg_grain_unique`, `assert_fct_grain_unique`).
+
+### 4-4. 마트가 답한 질문 (실측 결과)
+
+`fct_query_daily` 일자별 요약(min delta_calls = 0 = 클램프 정상):
+
+| dt | 그레인 | 총 delta_calls | 총 delta_time |
+|---|---|---|---|
+| 2026-07-05 | 534 | 624,915 | 141.2 s |
+| 2026-07-06 | 448 | 7,458 | 11.4 s |
+| 2026-07-07 | 767 | 2,494,206 | 365.9 s |
+
+`mart_query_regression` 21행. "지난 구간보다 느려진 쿼리?" TOP(07-05 → 07-07 평균 지연):
+
+| inst | 쿼리 | first_ms | last_ms | +ms | +% | last_delta_calls |
+|---|---|---|---|---|---|---|
+| 8(Oracle) | `SELECT sql_id, MAX(SUBSTR(sql_text…` | 25.89 | 64.50 | 38.61 | 149.1 | 686 |
+| 4(메타PG 자기쿼리) | `select qs1_0.id,qs1_0.calls,…` | 19.52 | 38.30 | 18.78 | 96.2 | 1,324 |
+| 1(MySQL) | ``SELECT `p`.`ID` AS `pid`,…`` | 1.05 | 2.19 | 1.14 | 109.3 | 416 |
+
+inst 4는 DBTower가 자기 메타 PG에 던지는 스냅샷 적재/조회 쿼리 — 파이프라인이 준 부하를 파이프라인이
+관측하는 도그푸딩이 데이터로도 드러난다.
+
+### 4-5. 문서/계보 (스크린샷)
+
+- `dbt docs generate` 후 lineage 그래프: raw.query_snapshot(source) → stg_query_snapshot →
+  fct_query_daily → mart_query_regression + 커스텀 테스트 3개 분기.
+  `docs/images/dbt-lineage.png`.
+- dbt run/test 통과 + 마트 질의 실제 출력: `docs/images/dbt-mart-result.png`.
+
+## 5. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 07-07 값은 시점 의존.
-- raw는 아직 질문에 답 못 함(누적값). 일간 델타·회귀 랭킹은 Phase 2(dbt).
-- 품질 게이트(빈 파티션·freshness) 없음 — Phase 3.
-- 스케줄러 상시 구동은 로컬 리소스 절약 위해 검증 후 정지 가능(DAG 구조·e2e 실행은 위에서 확인).
+- 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을
+  완벽히 분리하진 못한다(id는 스냅샷마다 새로 발번). 지문 단위 '총 활동'까지가 정직한 한계.
+- first-vs-last는 하루 중 리셋 이후 재상승분을 일부 잃는다(순리셋 219그레인). DBTower 정식 로직과의
+  정합을 우선해 감수했고, 잃는 양은 클램프된 그레인 수로 계량해 두었다.
+- 품질 게이트(빈 파티션·freshness·이상 알림)는 아직 없음 — Phase 3.
+- 3일치(07-05~07)만 적재돼 회귀 비교는 사실상 이틀 간. '지난달' 규모 추세는 적재 누적 후.

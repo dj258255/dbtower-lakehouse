@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: fct_query_daily
+    description: >
+      인스턴스+쿼리별 일간 발생량 팩트. 누적 카운터를 인접 스냅샷 차분(리셋 클램프)
+      으로 합산해 delta_calls/delta_total_time_ms/avg_latency_ms를 만든다.
+    columns:
+      - name: instance_id
+        description: "database_instance FK."
+        tests:
+          - not_null
+          # 팩트의 모든 인스턴스는 staging에 존재해야 한다(계보 무결성).
+          - relationships:
+              arguments:
+                to: ref('stg_query_snapshot')
+                field: instance_id
+      - name: query_id
+        description: "쿼리 지문 해시."
+        tests:
+          - not_null
+      - name: dt
+        description: "논리 날짜(date)."
+        tests:
+          - not_null
+      - name: delta_calls
+        description: "하루 발생 호출수(누적 카운터 차분, 리셋은 0 클램프)."
+        tests:
+          - not_null
+      - name: delta_total_time_ms
+        description: "하루 발생 총 실행시간 ms(리셋 클램프)."
+        tests:
+          - not_null
+      - name: avg_latency_ms
+        description: "delta_total_time_ms / delta_calls. delta_calls=0이면 NULL."
+
+  - name: mart_query_regression
+    description: >
+      첫 활동일 대비 마지막 활동일 평균 지연이 악화된 쿼리 랭킹.
+      0편이 못 답한 '지난 구간보다 느려진 쿼리?'에 답한다.
+    columns:
+      - name: instance_id
+        tests:
+          - not_null
+      - name: query_id
+        tests:
+          - not_null
+      - name: latency_increase_ms
+        description: "last_latency_ms - first_latency_ms(항상 양수: 악화만 남김)."
+        tests:
+          - not_null
