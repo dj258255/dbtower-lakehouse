@@ -90,8 +90,23 @@ s3://lakehouse/raw/query_snapshot/dt=YYYY-MM-DD/instance_id=N/part-000.parquet
 - 옛 파티션과 호환이 깨질 변경은 Phase 5(DuckLake, 스키마 진화 지원)에서 다룬다.
   raw 레이어는 원천 스키마를 그대로 따라간다.
 
-## 6. 비계약(아직 보장 안 하는 것)
+## 6. 품질 게이트 (Phase 3 — 다운스트림 전 검문)
 
-- 지연 도착(late-arriving) 처리: raw는 "그 시점의 원천 스냅샷"만 보장. Phase 3 품질 게이트에서.
-- 데이터 품질(널·범위·freshness) 검증: Phase 3.
+raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히 오답을 낸다. 다운스트림(dbt)에
+넘어가기 전 `extract/quality.py`가 dt 파티션을 세 축으로 검문하고, FAIL이면 변환을 차단한다(fail-closed).
+
+| 검문 | 규칙 | 실패 |
+|---|---|---|
+| reconciliation | 원천 PG 행수 == parquet 행수(인스턴스별) | FAIL(차단) |
+| completeness | 레지스트리 기대 인스턴스가 dt 파티션에 전부 존재 | FAIL(차단) |
+| freshness | dt 최신 captured_at이 다음날 00:00에 근접(기본 WARN 3h / FAIL 12h) | WARN/FAIL |
+
+- 오케스트레이션: `extract/run_pipeline.py`(게이트→dbt run) 및 Airflow DAG
+  `offload → quality_gate → transform`. 게이트 FAIL 시 transform은 실행되지 않는다.
+- 실측: `docs/VERIFICATION.md` 5절(정상 통과 + 장애주입 FAIL + Airflow 차단).
+
+## 7. 비계약(아직 보장 안 하는 것)
+
+- 지연 도착(late-arriving) 처리: raw는 "그 시점의 원천 스냅샷"만 보장.
+- 통계적 이상 자동 감지·알림 발화(웹훅): 품질 게이트는 규칙 기반까지.
 - ACID·타임트래블: Phase 5(DuckLake). 현재 raw는 "lake"(파티션 덮어쓰기)까지.
