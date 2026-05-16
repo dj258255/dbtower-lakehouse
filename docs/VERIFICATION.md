@@ -216,7 +216,83 @@ transform     upstream_failed   # 게이트 실패로 실행되지 않음(반쪽
 - 품질 리포트(정상 OK + 장애주입 FAIL + Airflow 상태): `docs/images/quality-gate.png`.
 - Airflow 그래프(offload→quality_gate(빨강 failed)→transform(주황 upstream_failed)): `docs/images/quality-gate-dag.png`.
 
-## 6. 잔여 (정직)
+## 6. Phase 5 — DuckLake 테이블 포맷 (lake → house)
+
+> raw는 파티션 parquet를 통째로 덮어쓴다. 정확·멱등하지만 ACID도 타임트래블도 없어
+> 엄밀히는 "lake"다. 그 위에 테이블 포맷 DuckLake를 얹는다. **카탈로그는 PostgreSQL**
+> (로컬에 이미 PG가 있어 서비스 추가 0, 단 DBTower 메타 DB와 분리된 `ducklake_catalog`),
+> **데이터 파일은 MinIO(S3)**. 모듈 `extract/ducklake_load.py`. 재현: `python -m extract.ducklake_load`.
+> 수치는 닫힌 UTC 창(07-05·07-06)만 쓴다 — 07-07은 진행 중인 오늘이라 제외.
+
+### 6-1. ATTACH + 카탈로그가 PG에 생성됨 (실측)
+
+```
+$ python -m extract.ducklake_load
+[카탈로그 DB] ducklake_catalog @ localhost:15432 (신규 생성) — DBTower 메타 DB(dbtower)와 분리
+[ATTACH] ducklake:postgres → DATA_PATH s3://lakehouse/ducklake/  (카탈로그=PG, 데이터=S3)
+```
+
+- ATTACH: `ATTACH 'ducklake:postgres:dbname=ducklake_catalog ...' AS lh (DATA_PATH 's3://lakehouse/ducklake/')`.
+- PG의 `ducklake_catalog` DB에 카탈로그 테이블 **30개**가 생성됨(`ducklake_snapshot`,
+  `ducklake_table`, `ducklake_data_file`, `ducklake_schema` 등). 실측:
+  `ducklake_table` = query_snapshot 1건, `ducklake_data_file` = 2건(79,894행·149,259행).
+- **DBTower 메타 DB(dbtower) 안의 `ducklake_%` 테이블 = 0** — 원천 메타는 오염되지 않음.
+
+### 6-2. 버전이 쌓인다 — 네 번의 커밋 (실측)
+
+| 커밋 | 동작 | 버전 | 누적 행수 |
+|---|---|---|---|
+| 1 | CREATE TABLE query_snapshot | 1 | 0 |
+| 2 | INSERT dt=2026-07-06 (+79,894) | 2 | 79,894 |
+| 3 | INSERT dt=2026-07-05 (+149,259) | 3 | 229,153 |
+| 4 | UPDATE id=382457 total_time_ms 0.55→1000.55 | 4 | 229,153(불변) |
+
+`ducklake_snapshots('lh')` 목록(실측): v0 schemas_created → v1 tables_created →
+v2/v3 tables_inserted_into → v4 inlined_insert+inlined_delete(단일 행 UPDATE는
+DuckLake가 parquet 재작성 대신 카탈로그에 인라인). 벌크 INSERT 2건만 S3에 parquet를 썼다.
+
+### 6-3. 타임트래블 — 과거 버전이 현재와 다름을 실제 조회 (실측)
+
+```
+count @ v2 (07-06만 적재 직후)  = 79,894
+count @ v3 (07-05까지 적재 직후) = 229,153
+count @ v4 (현재)             = 229,153
+```
+
+한 행 값의 시점 차이(`AT (VERSION => n)`):
+
+```
+total_time_ms @ v3(과거) = 0.55       -- UPDATE 이전
+total_time_ms @ v4(현재) = 1000.55    -- UPDATE 이후
+```
+
+같은 테이블·같은 쿼리인데 버전 지정만으로 과거 상태(행수·행 값)를 그대로 되살렸다.
+raw 덮어쓰기로는 불가능했던 것 — 이 지점이 lake가 house가 되는 곳이다.
+
+### 6-4. 원자성 — BEGIN … ROLLBACK (실측)
+
+```
+트랜잭션 전 count       = 229,153
+DELETE 07-05 후(txn 내) = 79,894
+ROLLBACK 후 count       = 229,153   (원상복구)
+스냅샷 수 5 → 5  (롤백은 버전을 남기지 않음)
+```
+
+트랜잭션 안에서 149,259행을 지워도 ROLLBACK 하면 흔적 없이 되돌아가고, 스냅샷(버전)도
+남기지 않는다. 부분 반영이 없다.
+
+### 6-5. 데이터=S3 / 카탈로그=PG 분리 (실측)
+
+```
+s3://lakehouse/ducklake/main/query_snapshot/*.parquet
+  ducklake-...9163.parquet   810,322 bytes  (79,894행)
+  ducklake-...f045.parquet 1,384,993 bytes  (149,259행)
+```
+
+카탈로그(메타데이터)는 PG, 실제 컬럼나 데이터는 S3. 스토리지/컴퓨트 분리가 테이블
+포맷에서도 유지된다. 증거 이미지: `docs/images/ducklake-timetravel.png`(실제 실행 출력).
+
+## 7. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 07-07 값은 시점 의존.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을

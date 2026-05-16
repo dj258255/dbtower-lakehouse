@@ -4,7 +4,9 @@
 pyarrow==18.1.0
 psycopg2-binary==2.9.10
 boto3==1.35.90
-duckdb==1.1.3
+# DuckLake(Phase 5)는 DuckDB 확장이라 pip 패키지가 아니라 런타임에 INSTALL ducklake로
+# 받는다. 그 확장을 지원하는 DuckDB 1.3+가 필요하다(로컬 실측은 1.5.4).
+duckdb>=1.3.0
 
 # dbt는 Phase 2에서 본격 사용. 구조만 잡아둔다.
 dbt-core==1.9.1
