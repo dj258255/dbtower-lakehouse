@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">
+  <style>
+    .bg   { fill:#ffffff; }
+    .card { fill:#f8fafc; stroke:#cbd5e1; }
+    .lake { fill:#faf5ff; stroke:#c4b5fd; stroke-width:1.5; stroke-dasharray:6 5; }
+    .minio{ fill:#eef2ff; stroke:#c7d2fe; }
+    .marts{ fill:#ecfdf5; stroke:#a7f3d0; }
+    .sink { fill:#ecfeff; stroke:#a5f3fc; }
+    .gate { fill:#fffbeb; stroke:#fcd34d; }
+    .title { fill:#0f172a; font-weight:700; }
+    .mid   { fill:#1e293b; font-weight:600; }
+    .sub   { fill:#475569; }
+    .cap   { fill:#64748b; font-weight:600; letter-spacing:.4px; }
+    .lakename { fill:#7c3aed; font-weight:700; }
+    .label { fill:#334155; }
+    .a-flow{ stroke:#6366f1; fill:none; stroke-width:2; }
+    .h-flow{ fill:#6366f1; }
+    .a-gate{ stroke:#d97706; fill:none; stroke-width:2; stroke-dasharray:5 4; }
+    .h-gate{ fill:#d97706; }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill:#0b1220; }
+      .card { fill:#111827; stroke:#334155; }
+      .lake { fill:#1a132e; stroke:#6d28d9; }
+      .minio{ fill:#1e1b4b; stroke:#3730a3; }
+      .marts{ fill:#052e2b; stroke:#134e4a; }
+      .sink { fill:#083344; stroke:#155e75; }
+      .gate { fill:#3b2f0b; stroke:#a16207; }
+      .title { fill:#e2e8f0; }
+      .mid   { fill:#cbd5e1; }
+      .sub   { fill:#94a3b8; }
+      .cap   { fill:#94a3b8; }
+      .lakename { fill:#c4b5fd; }
+      .label { fill:#cbd5e1; }
+      .a-flow{ stroke:#818cf8; }
+      .h-flow{ fill:#818cf8; }
+      .a-gate{ stroke:#fbbf24; }
+      .h-gate{ fill:#fbbf24; }
+    }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1040" height="440" rx="14"/>
+
+  <!-- 섹션 캡션 -->
+  <text class="cap" x="116" y="118" font-size="12" text-anchor="middle">DBTower 메타 PG</text>
+  <text class="cap" x="920" y="118" font-size="12" text-anchor="middle">소비</text>
+
+  <!-- 가운데: dbtower-lakehouse 경계 -->
+  <rect class="lake" x="276" y="92" width="468" height="316" rx="14"/>
+  <text class="lakename" x="290" y="116" font-size="13">dbtower-lakehouse</text>
+
+  <!-- 원천 PG -->
+  <rect class="card" x="28" y="150" width="176" height="120" rx="10"/>
+  <text class="title" x="116" y="192" font-size="14" text-anchor="middle">query_snapshot</text>
+  <text class="sub"   x="116" y="216" font-size="11.5" text-anchor="middle">관측 스냅샷</text>
+  <text class="sub"   x="116" y="236" font-size="11.5" text-anchor="middle">7일 뒤 삭제</text>
+
+  <!-- MinIO parquet -->
+  <rect class="minio" x="300" y="150" width="170" height="120" rx="10"/>
+  <text class="title" x="385" y="192" font-size="14" text-anchor="middle">MinIO · S3</text>
+  <text class="mid"   x="385" y="214" font-size="12" text-anchor="middle">Parquet</text>
+  <text class="sub"   x="385" y="234" font-size="11" text-anchor="middle">dt= / instance= 파티션</text>
+
+  <!-- dbt marts -->
+  <rect class="marts" x="560" y="150" width="160" height="120" rx="10"/>
+  <text class="title" x="640" y="198" font-size="14" text-anchor="middle">dbt marts</text>
+  <text class="sub"   x="640" y="222" font-size="11.5" text-anchor="middle">일별 집계</text>
+
+  <!-- 소비 -->
+  <rect class="sink" x="828" y="150" width="184" height="120" rx="10"/>
+  <text class="title" x="920" y="192" font-size="14" text-anchor="middle">DuckDB 애드혹</text>
+  <text class="sub"   x="920" y="216" font-size="11.5" text-anchor="middle">대시보드 1장</text>
+
+  <!-- 품질 게이트 -->
+  <rect class="gate" x="300" y="322" width="170" height="66" rx="10"/>
+  <text class="title" x="385" y="350" font-size="13" text-anchor="middle">데이터 품질 게이트</text>
+  <text class="sub"   x="385" y="370" font-size="11" text-anchor="middle">실패 시 알림 · 다운스트림 차단</text>
+
+  <!-- 흐름 화살표 -->
+  <path class="a-flow" d="M206 210 L294 210"/>
+  <polygon class="h-flow" points="294,210 284,205 284,215"/>
+  <text class="label" x="250" y="197" font-size="10.5" text-anchor="middle">Airflow DAG</text>
+  <text class="label" x="250" y="230" font-size="10.5" text-anchor="middle">추출·적재</text>
+
+  <path class="a-flow" d="M472 210 L554 210"/>
+  <polygon class="h-flow" points="554,210 544,205 544,215"/>
+  <text class="label" x="513" y="197" font-size="10.5" text-anchor="middle">dbt 변환</text>
+
+  <path class="a-flow" d="M722 210 L822 210"/>
+  <polygon class="h-flow" points="822,210 812,205 812,215"/>
+  <text class="label" x="772" y="197" font-size="10.5" text-anchor="middle">질의</text>
+
+  <!-- 품질 게이트 연결선 (MinIO ↓ gate) -->
+  <path class="a-gate" d="M385 270 L385 318"/>
+  <polygon class="h-gate" points="385,318 380,308 390,308"/>
+</svg>

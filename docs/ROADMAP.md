@@ -194,8 +194,8 @@ DBTower 화면의 시점 비교와 일치하는 교차 검증 1건(스크린샷 
   서비스 하나가 더 는다. [DuckDB Iceberg writes](https://duckdb.org/docs/current/core_extensions/iceberg/writing).
 - DuckLake는 카탈로그를 **PostgreSQL에 SQL로** 두고 데이터는 parquet — **이미 PG를 써서 서비스 추가 0**.
   [ducklake.select](https://ducklake.select/).
-- 면접 화법: "표준은 Iceberg지만 로컬 단일노드엔 DuckLake가 구조적으로 맞았다. 타임트래블·스키마 진화
-  개념은 동일하므로 Iceberg 전환은 어댑터 문제다." (미지원이 아니라 규모 부적합)
+- 표준은 Iceberg지만 로컬 단일노드에는 DuckLake가 구조적으로 맞다. 타임트래블·스키마 진화 개념은
+  동일하므로 Iceberg 전환은 어댑터 문제(미지원이 아니라 규모 부적합).
 
 **개선(구현)**:
 - DuckLake 카탈로그용 PG(DBTower 메타 PG와 **물리 분리**) → `ATTACH 'ducklake:postgres:...'`.
@@ -217,18 +217,6 @@ DBTower 화면의 시점 비교와 일치하는 교차 검증 1건(스크린샷 
 - **Spark**: 단일 노드 DuckDB로 수년치 처리 가능. 메모리+로컬 디스크 한계 넘으면.
 - **클라우드 DW(BigQuery)**: 로컬 재현성 우선. dbt 어댑터 교체로 이전 가능.
 - **컬럼 레벨 계보·PII 거버넌스**: dbt Enterprise 영역. 문서 계보까지만.
-
----
-
-## 취업 매핑 (VTW류 공공 빅데이터 JD — 면접 방어)
-
-| JD 요구 | 본 프로젝트 대응 | 정직 비고 |
-|---|---|---|
-| 수집(Kafka) | ❌ 이 프로젝트 범위 밖 | pay와 섞지 않음. 정직히 "배치 수집" |
-| 적재(Hadoop/HDFS) | MinIO(S3)+parquet 파티셔닝 | 분산 파일 저장 개념 동일, 도구 현대판 |
-| 가공(Hive) | dbt+DuckDB SQL 모델 | SQL-on-files 동일 패러다임 |
-| 자동화(Oozie) | Airflow DAG | Oozie→Airflow는 업계 마이그레이션 추세(도구 실존) |
-| 데이터 품질·거버넌스 | dbt tests + contracts + docs | 실제 DE 역량 |
 
 ---
 

@@ -11,19 +11,13 @@
 **운영계(DBTower, 관제)와 분석계(lakehouse, 장기 이력)를 분리**하고, 그 사이를
 일 배치 파이프라인으로 잇는다 — 실무에서 OLTP와 DW를 분리하는 그 구조의 축소판.
 
-```
-[DBTower 메타 PG]              [dbtower-lakehouse]                       [소비]
- query_snapshot ──Airflow DAG──▶ MinIO(S3) parquet ──dbt──▶ marts ──▶ DuckDB 애드혹
- (7일 뒤 삭제)     추출·적재       dt=/instance= 파티션    일별 집계     대시보드 1장
-                                          │
-                                   데이터 품질 게이트(실패 시 알림)
-```
+![dbtower-lakehouse 파이프라인 — query_snapshot을 Airflow로 추출·적재하고 dbt로 집계해 DuckDB로 질의, 사이에 데이터 품질 게이트](docs/architecture.svg)
 
 ## 스택 (전부 로컬에서 e2e 재현 가능)
 
 | 층 | 도구 | 선택 이유 |
 |---|---|---|
-| 오케스트레이션 | **Apache Airflow** (docker compose, LocalExecutor) | 업계 표준. 레거시 Oozie와 개념(DAG·스케줄) 동일 — 공공 SI 스택 질문에도 답 가능 |
+| 오케스트레이션 | **Apache Airflow** (docker compose, LocalExecutor) | 업계 표준. 레거시 Oozie와 개념(DAG·스케줄) 동일 |
 | 저장 | **MinIO(S3 호환) + Parquet** | DBTower 데모 스택에 이미 있음(재사용). 스토리지/컴퓨트 분리 = lakehouse의 정의 |
 | 변환 | **dbt-core + dbt-duckdb** | SQL 기반 변환·테스트·문서화. Hive 가공의 현대판 |
 | 테이블 포맷 | **DuckLake** (카탈로그=PostgreSQL, 데이터=parquet) | ACID·타임트래블·스키마 진화 = "lake"를 "lakehouse"로. 이미 PG를 써서 카탈로그 DB 추가 0 (Iceberg는 REST 카탈로그 서버 필요라 로컬엔 과함) |
@@ -33,7 +27,7 @@
 
 ## 원칙 (DBTower에서 계승)
 
-1. **정직한 필요에서 시작한다** — 이력서용 도구 나열 금지. 모든 단계는 "왜 필요한가"가 먼저다.
+1. **정직한 필요에서 시작한다** — 도구부터 나열하지 않는다. 모든 단계는 "왜 필요한가"가 먼저다.
    (그래서 Kafka·Spark는 초기 범위에서 뺐다 — 일 수만 행 배치에 스트리밍·분산은 과잉. 잔여로 명시)
 2. **실측 필수** — 모든 단계는 로컬 e2e 라이브 실측 + 스크린샷 + `docs/VERIFICATION.md` 절 번호 기록.
 3. **부하 원칙** — 추출이 운영계(메타 PG)의 부하가 되면 안 된다. 시간창·LIMIT·읽기 전용.
