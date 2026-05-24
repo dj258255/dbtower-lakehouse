@@ -13,6 +13,28 @@
 
 ![dbtower-lakehouse 파이프라인 — query_snapshot을 Airflow로 추출·적재하고 dbt로 집계해 DuckDB로 질의, 사이에 데이터 품질 게이트](docs/architecture.svg)
 
+## 실측 화면
+
+Airflow가 `snapshot_offload` DAG를 성공적으로 실행(추출·적재):
+
+![Airflow 성공 런](docs/images/airflow-run-success.png)
+
+MinIO에 Hive 파티션(dt=/instance=)으로 적재된 Parquet:
+
+![MinIO parquet 파티션 트리](docs/images/minio-parquet.png)
+
+dbt 모델 계보 — raw → staging → marts + 테스트:
+
+![dbt lineage 그래프](docs/images/dbt-lineage.png)
+
+데이터 품질 게이트(fail-closed) — 정상 통과와 장애 주입 시 FAIL로 다운스트림 차단:
+
+![데이터 품질 게이트 실측](docs/images/quality-gate.png)
+
+DuckLake 타임트래블 — 과거 버전이 UPDATE 이전 값을 보존, 롤백은 원자적:
+
+![DuckLake 타임트래블·ACID](docs/images/ducklake-timetravel.png)
+
 ## 스택 (전부 로컬에서 e2e 재현 가능)
 
 | 층 | 도구 | 선택 이유 |
