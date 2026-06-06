@@ -106,9 +106,22 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
   `offload → quality_gate → transform`. 게이트 FAIL 시 transform은 실행되지 않는다.
 - 실측: `docs/VERIFICATION.md` 5절(정상 통과 + 장애주입 FAIL + Airflow 차단).
 
-## 7. 비계약(아직 보장 안 하는 것)
+## 7. 운영 계약 (Phase 6 — 실패는 통보되고, 과거는 절차로만 재적재한다)
+
+- **실패 통보**: 태스크가 최종 실패(재시도 소진)하면 `ALERT_WEBHOOK_URL`로 JSON POST
+  (dag/task/실행일/로그 URL/에러 요약). 알림 실패는 파이프라인 상태에 영향 없음(best-effort).
+- **retry**: 일시 장애는 retries=3 + 지수 백오프로 흡수. 단 품질 게이트는 retries=0 —
+  품질 FAIL은 결정적이므로 재시도하지 않는다.
+- **backfill**: catchup=False 고정. 과거 dt 재적재는 `docs/RUNBOOK.md` 절차로만.
+  멱등(파티션 통째 덮어쓰기)이 계약이므로 backfill은 몇 번이든 안전하다.
+- **DuckLake 유지보수**: 스냅샷·파일 보존 `DUCKLAKE_RETENTION`(기본 7일, 원천 보존과 대칭).
+  주간 CHECKPOINT가 그보다 오래된 버전을 만료·정리한다 — 그 이전으로의 타임트래블은
+  보장하지 않는다. 유지보수는 현재 상태(행수)를 절대 바꾸지 않는다(불변식 검사).
+
+## 8. 비계약(아직 보장 안 하는 것)
 
 - 지연 도착(late-arriving) 처리: raw는 "그 시점의 원천 스냅샷"만 보장.
-- 통계적 이상 자동 감지·알림 발화(웹훅): 품질 게이트는 규칙 기반까지.
+- 통계적 이상 자동 감지: 품질 게이트는 규칙 기반까지(실패 통보는 7절로 계약에 들어옴).
+- 알림 심각도 라우팅·중복 억제: 채널 하나에 best-effort POST까지.
 - ACID·타임트래블: Phase 5(DuckLake)에서 제공. raw 레이어 자체는 여전히
   "lake"(파티션 덮어쓰기)이고, 그 위에 테이블 포맷을 얹은 것이 house다.

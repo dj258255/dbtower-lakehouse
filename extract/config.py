@@ -23,9 +23,11 @@ class SourceConfig:
     password: str = os.getenv("SRC_PG_PASSWORD", "dbtower1234")
 
     def dsn(self) -> str:
+        # connect_timeout: 원천이 죽어 있으면 무한 대기 대신 5초 안에 실패시킨다
+        # (Phase 6 — 걸려서 멈춘 태스크는 재시도도 알림도 못 탄다. 빨리 죽어야 산다).
         return (
             f"host={self.host} port={self.port} dbname={self.dbname} "
-            f"user={self.user} password={self.password}"
+            f"user={self.user} password={self.password} connect_timeout=5"
         )
 
 
@@ -65,14 +67,14 @@ class DuckLakeConfig:
         return (
             f"dbname={self.catalog_db} host={self.catalog_host} "
             f"port={self.catalog_port} user={self.catalog_user} "
-            f"password={self.catalog_password}"
+            f"password={self.catalog_password} connect_timeout=5"
         )
 
     def admin_dsn(self) -> str:
         """카탈로그 DB 생성/조회용 접속(postgres 기본 DB로 접속)."""
         return (
             f"host={self.catalog_host} port={self.catalog_port} dbname=postgres "
-            f"user={self.catalog_user} password={self.catalog_password}"
+            f"user={self.catalog_user} password={self.catalog_password} connect_timeout=5"
         )
 
 

@@ -292,14 +292,135 @@ s3://lakehouse/ducklake/main/query_snapshot/*.parquet
 카탈로그(메타데이터)는 PG, 실제 컬럼나 데이터는 S3. 스토리지/컴퓨트 분리가 테이블
 포맷에서도 유지된다. 증거 이미지: `docs/images/ducklake-timetravel.png`(실제 실행 출력).
 
-## 7. 잔여 (정직)
+## 7. Phase 6 — 운영 경화 (알림·retry·컨테이너 e2e·CHECKPOINT·backfill)
 
-- 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 07-07 값은 시점 의존.
+> 실측 시점의 원천 시계 = 2026-07-08 17:24 UTC. 즉 **07-07은 이제 닫힌 창**이다
+> (dt=07-07 = 279,002행으로 안정 — 이전 세션 마지막 실측치와 동일, 불변 확인).
+> 이 절의 수치는 전부 닫힌 창(07-05·07-06·07-07)만 쓴다.
+
+### 7-1. 컨테이너 안 3태스크 e2e — transform이 마침내 DAG 안에서 돈다 (실측)
+
+Phase 5까지 transform 태스크는 컨테이너에 dbt가 없어 로그만 남기고, 실제 dbt는
+호스트 수동 실행이었다(오케스트레이션의 최대 구멍). Dockerfile로 커스텀 이미지를 빌드해
+**분리 venv(/opt/dbt-venv)에 dbt-duckdb 1.10.1**을 얹고(Airflow 의존성과 격리),
+profiles의 s3 endpoint를 컨테이너 관점(`S3_ENDPOINT_HOSTPORT=dbtower-minio:9000`)으로
+주입했다. `airflow dags test snapshot_offload 2026-07-08`(→ dt=2026-07-07) 결과:
+
+```
+$ airflow tasks states-for-dag-run snapshot_offload manual__2026-07-08T00:00:00+00:00
+offload       success   (dt=2026-07-07, 279,002행 — 원천 PG·parquet 일치)
+quality_gate  success   (reconciliation/completeness/freshness 모두 OK, GATE: PASS)
+transform     success   (컨테이너 안 dbt run PASS=3 → dbt test PASS=18)
+
+transform 반환값: {'dt': '2026-07-07', 'dbt_run': 'PASS', 'dbt_test': 'PASS'}
+DagRun Finished: state=success, data_interval=[2026-07-07, 2026-07-08)
+```
+
+dbt run(모델 3) `Done. PASS=3 WARN=0 ERROR=0` + dbt test(18) `Done. PASS=18 WARN=0
+ERROR=0` 로그가 태스크 로그 안에 있다 — 처음으로 세 태스크가 전부 한 컨테이너 안에서
+끝났다. 스크린샷: `docs/images/e2e-dag.png`(그래프 뷰, 3태스크 success).
+
+### 7-2. 실패 알림 — webhook에 실제로 도착 (실측)
+
+`extract/alerts.py`의 `notify_task_failure`를 두 DAG의 default_args
+`on_failure_callback`에 걸었다. URL은 `ALERT_WEBHOOK_URL` env(미설정 시 no-op),
+전송 실패는 try/except로 삼켜 파이프라인을 또 죽이지 않는다. SLA 콜백은 쓰지 않았다
+(버그 많고 Airflow 3.0에서 제거된 폐기 경로 — on_failure_callback이 2.x 표준).
+
+장애 주입: freshness FAIL 임계를 0.5h로 조여(`QUALITY_FRESHNESS_FAIL_HOURS=0.5`)
+dt=07-07(경계까지 0.9h)을 강제 FAIL → 로컬 수신기(`python http.server` 기반, :18808)의
+**실제 수신 로그**:
+
+```
+[2026-07-08 17:47:22 UTC] POST /alert from 127.0.0.1
+{
+  "event": "airflow_task_failed",
+  "dag_id": "snapshot_offload",
+  "task_id": "quality_gate",
+  "logical_date": "2026-07-08 00:00:00+00:00",
+  "try_number": 1,
+  "max_tries": 0,
+  "log_url": "http://localhost:8080/dags/snapshot_offload/grid?...&task_id=quality_gate&...tab=logs",
+  "error": "품질 게이트 FAIL — 파티션 ['2026-07-07']. 다운스트림 차단."
+}
+```
+
+같은 순간 스케줄러 로그: `Marking task as FAILED ... task_id=quality_gate` →
+`알림 전송 완료 → http://host.docker.internal:18808/alert (HTTP 200)` →
+DagRun state=failed(transform 미실행). 차단(4·5절)에 통보가 붙었다.
+
+### 7-3. retry 정책 (default_args)
+
+- 공통: `retries=3`, `retry_delay=2m`, `retry_exponential_backoff=True`(2→4→8분),
+  `max_retry_delay=30m` — 원천 재기동·네트워크 순단을 흡수.
+- **quality_gate만 `retries=0` 유지** — 품질 FAIL은 결정적이라 재시도해도 그대로 FAIL
+  (기존 설계 계승). 위 7-2 수신 payload의 `max_tries: 0`이 그 증거다.
+- 부수 경화: 모든 PG DSN에 `connect_timeout=5` — 원천이 죽었을 때 무한 대기 대신
+  5초 안에 실패해 재시도·알림 경로에 태운다(실제로 원천 스택 다운 시 무한 대기 사고를
+  겪고 넣은 방어).
+
+### 7-4. DuckLake CHECKPOINT — 전/후 실측
+
+DuckLake는 스스로 아무것도 지우지 않는다 — 커밋마다 스냅샷이 쌓이고 덮어쓰인 파일이
+남는다. `extract/ducklake_maintenance.py` + `ducklake_maintenance` DAG(@weekly)가
+공식 권장 번들 `CHECKPOINT`(만료+플러시+컴팩션 — 만료·컴팩션을 손으로 따로 부르면
+순서 이슈가 보고됨) 후 `ducklake_cleanup_old_files`로 삭제 예약 파일을 정리한다.
+보존 기간 `DUCKLAKE_RETENTION` 기본 7 days(원천 보존 7일과 대칭), 데모는 0 seconds.
+
+Phase 5 데모를 2회 반복해 churn을 만든 뒤, 컨테이너 안
+`airflow dags test ducklake_maintenance`(DUCKLAKE_RETENTION='0 seconds') 실측:
+
+| 지표 | 전 | 후 |
+|---|---|---|
+| 스냅샷 수 | 11 | 2 |
+| 활성 데이터 파일(카탈로그) | 2 | 2 |
+| S3 오브젝트 수 | 7 | 3 |
+| S3 바이트 | 7,337,540 | 2,828,889 |
+| **테이블 행수(불변식)** | **229,153** | **229,153** |
+
+삭제된 파일 7개, 태스크 state=success. 옛 버전·죽은 파일은 사라지고 현재 상태는
+한 행도 안 변했다(모듈이 전/후 행수를 대조해 다르면 예외 — 그 예외도 webhook으로 온다).
+
+### 7-5. backfill 실증 — 멱등이라 행수 불변 (실측)
+
+절차 문서는 `docs/RUNBOOK.md`. 핵심 실측:
+
+- `--dry-run` 선검증: `Dry run of DAG snapshot_offload on 2026-07-06`으로 생성될 런
+  확인(TaskFlow XCom 의존 태스크는 렌더 불가로 뒤에서 에러 종료 — 알려진 제약,
+  RUNBOOK에 명시).
+- `airflow dags backfill snapshot_offload -s 2026-07-06 -e 2026-07-07 --reset-dagruns -y`
+  → 런 2개(논리 07-06·07-07 = dt 07-05·07-06 처리), 태스크 6/6 succeeded, failed 0.
+  **-s/-e는 논리 실행일(양끝 포함)이고 각 런은 전날 dt를 처리한다** — 실측으로 확정.
+- 멱등 검증(전/후 동일):
+
+| 항목 | backfill 전 | backfill 후 |
+|---|---|---|
+| dt=2026-07-05 행수 | 149,259 | **149,259** |
+| dt=2026-07-06 행수 | 79,894 | **79,894** |
+| dt=2026-07-06 오브젝트 수 | 6 | **6** |
+
+- `catchup=False`는 유지 — 과거 재처리는 위처럼 명시적으로만. 원천 보존이 7일이라
+  backfill 가능 창도 최근 7일이다(그보다 오래된 dt는 원천에 없다).
+
+### 7-6. 재현 가능성
+
+- 이미지: `Dockerfile`(apache/airflow:2.10.4-python3.12 + 추출 의존성 + /opt/dbt-venv에
+  dbt-duckdb 1.10.1) — `docker compose build`로 재현. 기동마다 pip을 도는
+  `_PIP_ADDITIONAL_REQUIREMENTS`는 폐기(비재현적).
+- 알림 배선 점검: `docker exec -w /opt/airflow lakehouse-airflow-scheduler python -m extract.alerts`
+  → 수신기에 manual_test payload 도착(HTTP 200)을 실측.
+
+## 8. 잔여 (정직)
+
+- 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 실측 시점 기준 07-08이 열린 창이다.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을
   완벽히 분리하진 못한다(id는 스냅샷마다 새로 발번). 지문 단위 '총 활동'까지가 정직한 한계.
 - first-vs-last는 하루 중 리셋 이후 재상승분을 일부 잃는다(순리셋 219그레인). DBTower 정식 로직과의
   정합을 우선해 감수했고, 잃는 양은 클램프된 그레인 수로 계량해 두었다.
-- 품질 게이트는 규칙 기반까지다(정합·완결성·freshness). 통계적 이상 자동 감지·알림 발화(웹훅)는 범위 밖 — 5절.
+- 품질 게이트는 규칙 기반까지다(정합·완결성·freshness). 실패 통보(웹훅)는 7-2절로 닫았지만,
+  통계적 이상 자동 감지는 여전히 범위 밖.
 - freshness는 dt 파티션 전체의 최신 captured_at으로 판정한다. 일부 인스턴스만 일찍 끊긴 경우
   다른 인스턴스가 경계까지 수집했으면 dt-level로는 OK가 될 수 있다(인스턴스별 freshness는 향후).
-- 3일치(07-05~07)만 적재돼 회귀 비교는 사실상 이틀 간. '지난달' 규모 추세는 적재 누적 후.
+- 마트는 여전히 전체 재빌드(table)다 — 적재가 수개월 쌓이면 증분(incremental) 모델 전환 필요.
+- 알림은 단일 webhook 채널 하나다. 심각도 라우팅·중복 억제(dedup)·에스컬레이션은 범위 밖.
+- CHECKPOINT는 @weekly 고정이다. 카탈로그 크기·커밋 빈도에 따른 적응형 주기는 하지 않았다.

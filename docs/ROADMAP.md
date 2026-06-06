@@ -209,7 +209,39 @@ DBTower 화면의 시점 비교와 일치하는 교차 검증 1건(스크린샷 
 
 ---
 
-## Phase 6 — 잔여 (정직하게 안 하는 것)
+## Phase 6 — 운영 경화: 실패해도 아무도 모르는 파이프라인은 미완성
+
+**상황**: Phase 3의 fail-closed 게이트가 반쪽 데이터를 잘 막았다. 그런데 막았다는 사실을
+**아무도 모른다** — 알림이 없어서 조용히 멈춘 채로 발견될 때까지 마트가 낡아간다. 게다가
+transform 태스크는 컨테이너에 dbt가 없어 실제 빌드가 호스트 수동 실행이었다 — DAG 그래프는
+3단계인데 마지막 단계가 사람 손이라면 그건 반쪽 오케스트레이션이다. DuckLake는 커밋마다
+버전을 쌓는데 만료가 없어 방치 시 카탈로그·S3가 단조 증가한다.
+
+**한계 인지**: 차단은 시작이고 통보가 완성이다. 재현 안 되는 컨테이너(기동마다 pip)와
+문서 없는 backfill은 "만든 사람만 돌릴 수 있는 파이프라인"이다.
+
+**개선(구현)**:
+- 실패 알림: `extract/alerts.py` — default_args `on_failure_callback` → `ALERT_WEBHOOK_URL`로
+  JSON POST(태스크·실행일·로그 URL·에러 요약). 알림 실패는 삼킨다(파이프라인 무영향).
+  SLA 콜백은 폐기 경로라 배제(3.0 제거).
+- retry 정책: retries=3 + 지수 백오프(2→4→8분). 단 quality_gate는 retries=0 유지(결정적 실패).
+  전 PG DSN connect_timeout=5(무한 대기 차단 — 실제 원천 다운 사고에서 배움).
+- 컨테이너에 dbt: `Dockerfile` — 분리 venv(/opt/dbt-venv)에 dbt-duckdb(Airflow 의존성과 격리),
+  `_PIP_ADDITIONAL_REQUIREMENTS` 폐기. transform이 컨테이너 안에서 dbt run+test 실행.
+- DuckLake 유지보수: `ducklake_maintenance` DAG(@weekly) — 공식 권장 번들 CHECKPOINT
+  (만료+플러시+컴팩션, 손 순서 이슈 회피) + 삭제 예약 파일 정리. 보존 7일(원천과 대칭).
+- `docs/RUNBOOK.md`: 실패 대응(알림→로그→재적재)·backfill 레시피(-s/-e 날짜 산수 실측
+  포함)·유지보수 주기.
+
+**실측**: 3태스크 전부 컨테이너 안 success(dbt PASS=3/test PASS=18) · 강제 FAIL 시 webhook
+실수신 · CHECKPOINT 전후 스냅샷 11→2, S3 7→3오브젝트(행수 불변) · backfill 후 행수 불변.
+`docs/VERIFICATION.md` 7절.
+
+**잔여**: 증분 모델·알림 라우팅·적응형 유지보수 주기 — Phase 7 참조.
+
+---
+
+## Phase 7 — 잔여 (정직하게 안 하는 것)
 
 - **Iceberg/Delta**: 멀티엔진(Spark+Trino+Flink)이 한 테이블 공유하는 대규모 조직 표준. 우리 규모엔
   DuckLake가 맞음. 전환은 어댑터 문제.
