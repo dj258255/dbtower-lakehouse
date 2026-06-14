@@ -179,6 +179,10 @@ DBTower 화면의 시점 비교와 일치하는 교차 검증 1건(스크린샷 
 나란히 스크린샷** — 이 대비가 프로젝트 전체의 존재 증명.
 **산출물**: VERIFICATION 5절 · 블로그 4편.
 
+> 실행 기록: 이 Serve 단계는 품질 게이트(블로그 4편)·DuckLake(5편)·운영 경화(6편)를
+> 먼저 닫은 뒤 **Phase 7(아래)에서 Metabase 대시보드로 구현**했다 — 반쪽 데이터 위에
+> 화면부터 얹지 않으려는 순서 조정.
+
 ---
 
 ## Phase 5 — 테이블 포맷(DuckLake): "lake"를 "lakehouse"로
@@ -237,11 +241,45 @@ transform 태스크는 컨테이너에 dbt가 없어 실제 빌드가 호스트 
 실수신 · CHECKPOINT 전후 스냅샷 11→2, S3 7→3오브젝트(행수 불변) · backfill 후 행수 불변.
 `docs/VERIFICATION.md` 7절.
 
-**잔여**: 증분 모델·알림 라우팅·적응형 유지보수 주기 — Phase 7 참조.
+**잔여**: 증분 모델·알림 라우팅·적응형 유지보수 주기 — Phase 8 참조.
 
 ---
 
-## Phase 7 — 잔여 (정직하게 안 하는 것)
+## Phase 7 — 대시보드: 마트는 있는데 소비자가 없다
+
+**상황**: 파이프라인은 매일 마트를 굽는데, 그 답을 보려면 여전히 DuckDB 셸에 SQL을
+쳐야 한다. 0편의 질문("지난 구간보다 느려진 쿼리 있어?")을 던진 사람은 SQL을 치는
+사람이 아니다. 마트에 소비자가 없으면 파이프라인은 출구 없는 공장이다.
+
+**판단 — Metabase (셀프서비스 BI)**:
+- 정적 리포트(Evidence류·노트북 내보내기)는 "만든 질문"에만 답한다. 필터로 파고드는
+  탐색(인스턴스별·기간별)은 BI 서버가 맞다.
+- Metabase는 MotherDuck이 유지하는 DuckDB 커뮤니티 드라이버가 있어 서빙 DB 추가 없이
+  DuckDB/DuckLake를 직접 읽고, 초기 설정→커넥션→질문→대시보드가 전부 REST API라
+  재현을 스크립트로 못박을 수 있다(`scripts/metabase_bootstrap.py`).
+
+**개선(구현)**:
+- compose에 `metabase` 서비스(:13001). 공식 이미지가 Alpine이라 DuckDB JDBC 네이티브
+  라이브러리가 안 떠서(**함정 1**, glibc) Debian 기반 커스텀 이미지(`metabase/Dockerfile`)에
+  드라이버를 굽는다. 드라이버-Metabase 버전은 짝으로 고정(1.5.3.0 = Metabase 59).
+- **함정 2 — 연결 대상**: dbt의 DuckDB 파일 직결은 읽히긴 하지만 서빙 계층 실격.
+  파일은 프로세스 간 단일 쓰기라 같은 호스트에선 transform이 잠금 충돌로 죽고
+  ("Conflicting lock is held" 실측), 컨테이너 경계(virtiofs)에선 잠금이 전파되지 않아
+  쓰기 도중 읽기가 무방비가 된다(실측 — 더 나쁨). → DAG 끝에 `publish` 태스크를 달아
+  마트를 DuckLake로 발행하고, Metabase는 DuckLake만 read-only로 읽는다(동시성 중재를
+  파일 잠금이 아니라 PG 트랜잭션이 한다).
+- **함정 3 — 커넥션 풀과 init_sql**: init_sql의 `CREATE OR REPLACE SECRET`이 동시 카드
+  로딩 때 write-write conflict를 낸다(실측). S3 자격증명은 세션 로컬 `SET s3_*`로.
+- 대시보드 1장: 악화 쿼리 랭킹 표(first→last avg latency·악화율) + 일별 추이 +
+  인스턴스 필터. 질문·필터 배선까지 API로 생성(멱등).
+
+**실측**: 4태스크(offload→gate→transform→publish) 컨테이너 안 e2e success ·
+마트=API=화면 3자 수치 일치(instance 8, +149.1%) · 발행(쓰기) 중 연속 41회 읽기 무중단.
+**산출물**: VERIFICATION 8절 · RUNBOOK 5절 · 블로그 7편.
+
+---
+
+## Phase 8 — 잔여 (정직하게 안 하는 것)
 
 - **Iceberg/Delta**: 멀티엔진(Spark+Trino+Flink)이 한 테이블 공유하는 대규모 조직 표준. 우리 규모엔
   DuckLake가 맞음. 전환은 어댑터 문제.

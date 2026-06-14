@@ -1,10 +1,11 @@
 """snapshot_offload — query_snapshot 일 배치 파이프라인 DAG.
 
-    offload(EL) → quality_gate(품질 검문) → transform(dbt run+test)
+    offload(EL) → quality_gate(품질 검문) → transform(dbt run+test) → publish(DuckLake 발행)
 
 매일 UTC 새벽, 논리 날짜(data_interval_start의 날짜 = '어제')의 스냅샷을
 메타 PG에서 읽어 MinIO에 parquet로 내리고(Phase 1), 품질 게이트로 검문한 뒤
-(Phase 3), 통과하면 컨테이너 안의 dbt로 변환·테스트까지 돌린다(Phase 6).
+(Phase 3), 통과하면 컨테이너 안의 dbt로 변환·테스트까지 돌리고(Phase 6),
+마트를 DuckLake로 발행해 대시보드(Metabase)가 읽게 한다(Phase 7).
 핵심 로직은 extract 패키지에 있고 이 DAG는 얇게 감쌀 뿐이다(=Airflow 없이도 재현 가능).
 
 fail-closed(Phase 3): quality_gate는 정합·완결성·신선도를 검문하고, FAIL이면 예외를
@@ -126,7 +127,24 @@ def snapshot_offload():
             results[f"dbt_{command}"] = "PASS"
         return results
 
-    transform(quality_gate(offload()))
+    @task
+    def publish(transform_result: dict) -> dict:
+        """마트를 DuckLake로 발행 — 대시보드(Metabase)가 읽는 서빙 계층 (Phase 7).
+
+        dbt가 마트를 짓는 DuckDB 파일은 프로세스 간 단일 쓰기라 BI가 직접 물면
+        transform과 충돌한다(잠금 충돌 또는 컨테이너 경계에선 잠금 소실 —
+        VERIFICATION 8절 실측). 그래서 transform 완료 후 마트를 DuckLake
+        (카탈로그=PG, 데이터=S3)로 복사하고, Metabase는 DuckLake만 읽는다 —
+        읽기와 쓰기가 서로를 막지 않는다.
+        """
+        from extract.publish_marts import publish_marts
+
+        published = publish_marts(
+            duckdb_path=f"{DBT_PROJECT_DIR}/dbtower_lakehouse.duckdb"
+        )
+        return {"dt": transform_result["dt"], **published}
+
+    publish(transform(quality_gate(offload())))
 
 
 snapshot_offload()

@@ -410,7 +410,109 @@ Phase 5 데모를 2회 반복해 churn을 만든 뒤, 컨테이너 안
 - 알림 배선 점검: `docker exec -w /opt/airflow lakehouse-airflow-scheduler python -m extract.alerts`
   → 수신기에 manual_test payload 도착(HTTP 200)을 실측.
 
-## 8. 잔여 (정직)
+## 8. Phase 7 — 대시보드 (Metabase가 DuckLake를 읽는다)
+
+실측 시각 기준 원천 시계 2026-07-08 18:28 UTC, 원천 수집은 07-07 23:04에 멈춰 있어
+**dt=2026-07-05·07-06·07-07 전부 닫힌 창**이다(마트 수치 안정). 스크린샷은 전부
+실캡처(로그인 후 화면)다.
+
+### 8-1. 드라이버 — 공식 이미지에서 안 뜬다 (실측)
+
+- metabase/metabase:v0.59.16(Alpine/musl) + metabase_duckdb_driver 1.5.3.0:
+  드라이버 등록은 되지만 첫 연결에서
+  `UnsatisfiedLinkError: libduckdb_java....so: Error loading shared library libstdc++.so.6`
+  — DuckDB JDBC 네이티브 라이브러리가 glibc 링크라 musl에서 실패(드라이버 저장소의
+  알려진 제약).
+- Debian 기반 커스텀 이미지(`metabase/Dockerfile`, eclipse-temurin:21-jre-jammy +
+  metabase.jar 0.59.16 + 드라이버 1.5.3.0)로 교체 → 연결 성공. 버전은 짝으로 고정
+  (드라이버 1.5.3.0 = Metabase 59 + DuckDB 1.5.3; dbt 쪽 duckdb 1.5.4와 같은 1.5 계열로
+  파일·DuckLake 포맷 호환 실측).
+
+### 8-2. 연결 대상 판단 — DuckDB 파일은 서빙 계층 실격 (실측 2건)
+
+**(a) 파일 연결 자체는 된다.** dbt의 DuckDB 파일을 read-only로 물리면 마트가 보이고
+수치도 정확하다(8-4와 동일 값). 문제는 읽기가 아니라 **동시성**이다.
+
+**(b) 같은 호스트, 프로세스 2개** — 읽기 전용 커넥션이 물고 있는 파일에 쓰기 열기 시도:
+
+```
+Conflicting lock is held in /Library/.../Python (PID 99884) by user beomsu.
+```
+
+→ 리눅스 운영이라면 매일 새벽 transform(dbt)이 이 에러로 죽는다. BI는 켜 두는 물건이다.
+
+**(c) 컨테이너 경계(macOS Docker Desktop, virtiofs)** — Metabase 컨테이너가 파일을
+물고 있는 상태(`/proc/1/fd/25 → /marts/dbtower_lakehouse.duckdb` 확인)에서 스케줄러
+컨테이너의 dbt run: **에러 없이 성공**. 즉 잠금이 컨테이너 경계를 넘어 전파되지 않아,
+dbt가 열린 리더 밑에서 파일을 소리 없이 재작성했다. 시끄럽게 죽는 (b)보다 나쁘다 —
+쓰기 도중 읽기가 무방비인데 아무도 모른다.
+
+→ **판단**: 마트를 DuckLake(카탈로그=PG, 데이터=S3)로 발행(publish 태스크)하고 Metabase는
+DuckLake만 읽는다. 파일 잠금이 아니라 PG 트랜잭션(스냅샷 격리)이 동시성을 중재한다.
+드라이버가 duckdb 버전 비호환이었다면 PG로 마트를 내보내는 안이 대안이었는데, 1.5 계열이
+맞아서 불필요했다.
+
+### 8-3. e2e — 4태스크 전부 컨테이너 안 success
+
+`airflow dags backfill snapshot_offload -s 2026-07-08 -e 2026-07-08 --reset-dagruns -y`
+(→ dt=2026-07-07 처리):
+
+```
+offload       success   dt=2026-07-07, 279,002행 (6인스턴스)
+quality_gate  success   3검문 OK → GATE: PASS
+transform     success   dbt run PASS=3 · dbt test PASS=18
+publish       success   fct_query_daily 1,749행 · mart_query_regression 22행 → DuckLake
+                        (발행 후 행수를 원본과 대조 — 다르면 예외)
+```
+
+![4태스크 e2e 성공](images/e2e-dag-publish.png)
+
+### 8-4. 수치 정합 — 마트 = Metabase 화면 (3자 대조)
+
+동일 질의를 (1) dbt DuckDB 파일 직독, (2) Metabase→DuckLake(API /api/dataset),
+(3) 대시보드 화면 셋에서 대조:
+
+| 경로 | 악화 1위 | first→last avg latency | 악화율 |
+|---|---|---|---|
+| DuckDB 파일 직독 | instance 8 · g108q7fj4pmkv | 25.89 → 64.50 ms | **+149.1%** |
+| Metabase API(DuckLake) | instance 8 · g108q7fj4pmkv | 25.89 → 64.50 ms | **+149.1%** |
+| 대시보드 화면 | instance 8 · g108q7fj4pmkv | 25.89 → 64.50 ms | **+149.1%** |
+
+일별 추이(dt별 delta_calls 합)도 3경로 동일: 07-05=624,915 · 07-06=7,458 ·
+07-07=2,503,874. 인스턴스 필터 instance=8 → 악화 쿼리 4행(파일 직독 count와 일치).
+
+![Metabase 대시보드 전체](images/metabase-dashboard.png)
+![악화 쿼리 랭킹 클로즈업](images/metabase-regression.png)
+![인스턴스 필터 적용(instance=8)](images/metabase-dashboard-filtered.png)
+
+### 8-5. 동시성 — 발행(쓰기) 중 대시보드(읽기) 무중단 (실측)
+
+publish(DROP+CREATE 커밋 2회)를 돌리면서 Metabase로 0.3s 간격 연속 질의(41회):
+**전부 completed, 매번 온전한 22행** — 커밋과 겹친 읽기(04:05:22~23)도 반쪽 테이블
+없이 발행 전/후의 온전한 버전만 봤다(DuckLake 스냅샷 격리). 8-2의 파일과 정반대 결과.
+
+### 8-6. 함정 — 동시 카드 로딩이 SECRET 경합을 깨운다 (실측)
+
+첫 구현은 init_sql에서 `CREATE OR REPLACE SECRET minio(...)`로 S3 자격증명을 만들었다.
+카드를 한 장씩 API로 돌리면 전부 completed인데, **대시보드가 카드 3장을 동시에 쏘면**
+2장이 500으로 죽었다:
+
+```
+TransactionContext Error: Catalog write-write conflict on alter with "minio"
+```
+
+커넥션 풀이 커넥션을 여러 개 열고, 커넥션마다 도는 init_sql이 같은 DuckDB 인스턴스의
+공유 카탈로그에 SECRET replace를 동시에 시도한 것. 세션 로컬인 `SET s3_*`로 바꾸자
+(경합할 공유 상태 자체가 없음) 동시 3카드×3회 반복·콜드 스타트 재기동 후 대시보드
+로딩까지 전부 completed.
+
+### 8-7. 재현
+
+- 기동: `docker compose up -d metabase` (metabase/Dockerfile 빌드 포함)
+- 초기 설정→연결→질문→대시보드: `.venv/bin/python scripts/metabase_bootstrap.py`
+  (멱등 — 전 과정 REST API, 절차는 docs/RUNBOOK.md 5절)
+
+## 9. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 실측 시점 기준 07-08이 열린 창이다.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을
@@ -424,3 +526,7 @@ Phase 5 데모를 2회 반복해 churn을 만든 뒤, 컨테이너 안
 - 마트는 여전히 전체 재빌드(table)다 — 적재가 수개월 쌓이면 증분(incremental) 모델 전환 필요.
 - 알림은 단일 webhook 채널 하나다. 심각도 라우팅·중복 억제(dedup)·에스컬레이션은 범위 밖.
 - CHECKPOINT는 @weekly 고정이다. 카탈로그 크기·커밋 빈도에 따른 적응형 주기는 하지 않았다.
+- 대시보드의 인스턴스 필터는 숫자 id다 — 원천 database_instance(이름·기종)를 dim으로
+  내리지 않아 화면에 "instance 8"로만 보인다(기종 라벨은 DBTower 화면의 몫으로 남김).
+- Metabase 앱 DB는 H2 단일 파일(로컬 데모 규모)이다. 운영이면 PG로 빼고 백업 대상에 넣어야 한다.
+- 알림(webhook)과 대시보드는 아직 별개다 — 게이트 FAIL이 대시보드에 배지로 뜨지는 않는다.

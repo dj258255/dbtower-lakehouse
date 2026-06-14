@@ -103,7 +103,7 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
 | freshness | dt 최신 captured_at이 다음날 00:00에 근접(기본 WARN 3h / FAIL 12h) | WARN/FAIL |
 
 - 오케스트레이션: `extract/run_pipeline.py`(게이트→dbt run) 및 Airflow DAG
-  `offload → quality_gate → transform`. 게이트 FAIL 시 transform은 실행되지 않는다.
+  `offload → quality_gate → transform → publish`. 게이트 FAIL 시 transform 이후는 실행되지 않는다.
 - 실측: `docs/VERIFICATION.md` 5절(정상 통과 + 장애주입 FAIL + Airflow 차단).
 
 ## 7. 운영 계약 (Phase 6 — 실패는 통보되고, 과거는 절차로만 재적재한다)
@@ -117,6 +117,10 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
 - **DuckLake 유지보수**: 스냅샷·파일 보존 `DUCKLAKE_RETENTION`(기본 7일, 원천 보존과 대칭).
   주간 CHECKPOINT가 그보다 오래된 버전을 만료·정리한다 — 그 이전으로의 타임트래블은
   보장하지 않는다. 유지보수는 현재 상태(행수)를 절대 바꾸지 않는다(불변식 검사).
+- **서빙(Phase 7)**: 대시보드(Metabase)는 dbt의 DuckDB 파일을 직접 열지 않는다 —
+  `publish` 태스크가 DuckLake로 발행한 마트만 read-only로 읽는다(파일은 프로세스 간
+  단일 쓰기라 BI가 물면 transform과 충돌 — VERIFICATION 8-2절 실측). 발행은 통째
+  교체(DROP+CREATE 한 커밋)이고 발행 후 행수를 원본과 대조한다(다르면 실패).
 
 ## 8. 비계약(아직 보장 안 하는 것)
 

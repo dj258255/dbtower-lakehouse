@@ -138,3 +138,48 @@ docker exec -w /opt/airflow lakehouse-airflow-scheduler python -m extract.alerts
   (호스트에서 듣는 수신기면 `http://host.docker.internal:PORT/...`).
 - 알림 실패는 파이프라인을 죽이지 않는다(try/except로 삼킴). 즉 "알림이 안 왔다"가
   "파이프라인이 안 돌았다"를 뜻하지 않는다 — UI/`airflow dags list-runs`가 최종 진실이다.
+
+## 5. 대시보드 (Metabase) 운영·재현
+
+### 5-1. 구성
+
+| 구성 | 값 |
+|---|---|
+| 컨테이너 | `lakehouse-metabase` (compose `metabase`, 커스텀 이미지 `metabase/Dockerfile`) |
+| 포트 | http://localhost:13001 (13000은 dbtower-grafana) |
+| 관리자 | `.env`의 `METABASE_ADMIN_EMAIL` / `METABASE_ADMIN_PASSWORD` |
+| 연결 대상 | **DuckLake**(카탈로그 PG `ducklake_catalog` + MinIO), read-only |
+| 데이터 공급 | `snapshot_offload`의 `publish` 태스크가 dbt 마트를 DuckLake로 발행 |
+| 앱 DB | H2(named volume `metabase-data`) — 지우면 대시보드도 사라진다 |
+
+Metabase는 dbt의 DuckDB **파일을 직접 물지 않는다**. 파일은 프로세스 간 단일 쓰기라
+BI가 물면 transform과 충돌한다(같은 호스트에선 잠금 충돌, 컨테이너 경계에선 잠금이
+전파되지 않아 더 위험 — VERIFICATION 8-2절 실측).
+
+### 5-2. 빈 상태에서 재현 (드라이버 설치 → 연결 → 대시보드)
+
+```bash
+cp .env.example .env               # METABASE_ADMIN_PASSWORD를 강한 값으로 채운다
+docker compose up -d metabase      # 이미지 빌드에 드라이버 jar 다운로드 포함
+.venv/bin/python scripts/metabase_bootstrap.py
+```
+
+부트스트랩은 멱등이다(이름으로 찾아 있으면 재사용) — 초기 설정, DuckLake 커넥션,
+질문 3개(악화 랭킹 표·일별 추이·악화 쿼리 수), 대시보드 1장 + 인스턴스 필터 배선까지
+전부 REST API로 만든다. 손 클릭 재현 절차가 아니라 스크립트가 곧 절차다.
+
+### 5-3. 알려진 제약·주의
+
+- **드라이버-Metabase 버전은 짝이다.** metabase_duckdb_driver 릴리스 이름이
+  "Metabase NN + DuckDB x.y.z"다. Metabase 이미지를 올리려면 드라이버도 같이 올릴 것
+  (`metabase/Dockerfile`의 ARG 두 개). DuckDB 계열이 dbt 쪽(1.5.x)과 갈라지면
+  DuckLake/파일 포맷 호환부터 확인.
+- **공식 Metabase 이미지(Alpine)에선 드라이버가 안 뜬다** — glibc 문제. 반드시
+  커스텀 이미지로(VERIFICATION 8-1절).
+- **커넥션 init_sql에 카탈로그를 건드리는 문장(CREATE SECRET 등)을 넣지 말 것.**
+  동시 카드 로딩 때 커넥션 풀이 write-write conflict를 낸다(VERIFICATION 8-6절).
+  S3 자격증명은 세션 로컬 `SET s3_*`로.
+- 대시보드가 "테이블 없음"이면: `publish` 태스크가 돌았는지부터
+  (`docker exec lakehouse-airflow-scheduler python -m extract.publish_marts`로 수동 발행 가능).
+- 주간 `ducklake_maintenance` CHECKPOINT는 마트 테이블도 함께 정리한다(발행 커밋이
+  스냅샷으로 쌓이므로 정상).

@@ -41,6 +41,18 @@ success(dbt run+test 포함), 실패 시 webhook 알림·주간 DuckLake CHECKPO
 
 ![컨테이너 안 3태스크 e2e 성공](docs/images/e2e-dag.png)
 
+대시보드(Phase 7) — 0편의 출발 질문 "지난 구간보다 느려진 쿼리 있어?"에 클릭 몇 번으로
+답하는 화면. Metabase가 DuckLake(카탈로그=PG, 데이터=S3)를 read-only로 읽고, 마트는
+파이프라인 끝의 `publish` 태스크가 매일 발행한다(dbt DuckDB 파일 직결이 안 되는 이유와
+실측은 [docs/VERIFICATION.md](docs/VERIFICATION.md) 8절):
+
+![Metabase 대시보드 — 악화 쿼리 랭킹·일별 추이·인스턴스 필터](docs/images/metabase-dashboard.png)
+
+원천(DBTower)은 7일이면 지우는 스냅샷인데, 랭킹 표는 구간 양 끝의 평균 지연을 비교해
+"instance 8의 g108q7fj4pmkv가 25.89ms → 64.50ms, +149.1%"라고 답한다:
+
+![악화 쿼리 랭킹 클로즈업](docs/images/metabase-regression.png)
+
 ## 스택 (전부 로컬에서 e2e 재현 가능)
 
 | 층 | 도구 | 선택 이유 |
@@ -51,6 +63,7 @@ success(dbt run+test 포함), 실패 시 webhook 알림·주간 DuckLake CHECKPO
 | 테이블 포맷 | **DuckLake** (카탈로그=PostgreSQL, 데이터=parquet) | ACID·타임트래블·스키마 진화 = "lake"를 "lakehouse"로. 이미 PG를 써서 카탈로그 DB 추가 0 (Iceberg는 REST 카탈로그 서버 필요라 로컬엔 과함) |
 | 쿼리 엔진 | **DuckDB** | S3 parquet 직독 + DuckLake first-class 지원. 무료·로컬·빠름 |
 | 품질 | **dbt tests (+ 필요 시 Great Expectations)** | freshness·중복·스키마 검증, 실패 시 웹훅 |
+| 대시보드 | **Metabase** (+ MotherDuck DuckDB 드라이버) | 셀프서비스 BI 표준. DuckDB/DuckLake 커넥터가 있어 서빙 DB 추가 0. 대시보드·필터를 API로 재현 가능(scripts/metabase_bootstrap.py) |
 | 언어 | **Python 3.12** | DAG·추출 스크립트 |
 
 ## 원칙 (DBTower에서 계승)
@@ -68,5 +81,5 @@ success(dbt run+test 포함), 실패 시 webhook 알림·주간 DuckLake CHECKPO
 
 ## 로드맵
 
-[docs/ROADMAP.md](docs/ROADMAP.md) — Phase 0~6 상세(구현 방법·함정·검증 기준·산출물).
-운영 절차(장애 대응·backfill·유지보수)는 [docs/RUNBOOK.md](docs/RUNBOOK.md).
+[docs/ROADMAP.md](docs/ROADMAP.md) — Phase 0~7 상세(구현 방법·함정·검증 기준·산출물).
+운영 절차(장애 대응·backfill·유지보수·대시보드)는 [docs/RUNBOOK.md](docs/RUNBOOK.md).

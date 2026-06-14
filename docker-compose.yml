@@ -104,8 +104,35 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # Phase 7: 대시보드(BI). 마트가 있어도 소비자가 없으면 파이프라인은 미완성이다.
+  #
+  # 연결 대상은 dbt의 DuckDB "파일"이 아니라 DuckLake(카탈로그=PG, 데이터=S3)다.
+  # DuckDB 파일은 프로세스 간 단일 쓰기다 — 같은 호스트에선 BI가 물고 있으면 새벽
+  # transform(dbt)이 잠금 충돌로 죽고, 컨테이너 경계(virtiofs)에선 그 잠금마저 전파되지
+  # 않아 쓰기 도중 읽기가 무방비가 된다(둘 다 실측 — docs/VERIFICATION.md 8절).
+  # DuckLake는 카탈로그가 PG 트랜잭션이라 읽기(대시보드)/쓰기(publish)가 서로 안 막는다.
+  #
+  # DuckDB 커넥터는 MotherDuck이 유지하는 커뮤니티 드라이버. 공식 Metabase 이미지는
+  # Alpine(musl)이라 드라이버의 네이티브 라이브러리가 안 뜬다(실측 UnsatisfiedLinkError)
+  # — Debian 기반 커스텀 이미지(metabase/Dockerfile)에 드라이버를 구워 쓴다.
+  # 앱 DB는 기본 H2를 볼륨에 영속(로컬 데모 규모 — 운영이면 PG로 뺀다).
+  # 초기 설정·연결·대시보드 재현: scripts/metabase_bootstrap.py (docs/RUNBOOK.md 5절).
+  metabase:
+    build: ./metabase
+    image: lakehouse-metabase:latest
+    container_name: lakehouse-metabase
+    ports:
+      - "13001:3000"   # 13000은 dbtower-grafana가 사용 중
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+      JAVA_TIMEZONE: UTC
+    volumes:
+      - metabase-data:/metabase-data
+    restart: unless-stopped
+
 volumes:
   airflow-db:
+  metabase-data:
 
 # dbtower 데모 스택 네트워크를 재사용해 원천 PG·MinIO에 붙는다.
 networks:
