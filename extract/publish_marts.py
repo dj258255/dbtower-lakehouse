@@ -14,7 +14,9 @@ raw(query_snapshot)가 이미 사는 곳이라 서비스 추가도 0이다.
 
 마트는 일간 집계라 작다(수천 행) — 통째 CREATE OR REPLACE가 증분보다 단순하고 멱등하다.
 DROP+CREATE가 DuckLake에선 하나의 커밋(스냅샷)이라, 읽는 쪽은 언제나 발행 전이나 후의
-온전한 버전만 본다(반쪽 테이블 없음).
+온전한 버전만 본다(반쪽 테이블 없음). 단 그 보장은 테이블 하나 단위였다 — Phase 8부터
+마트 전체를 단일 트랜잭션(BEGIN…COMMIT)으로 묶어, 중간 실패 시 "새 fct + 어제 mart"
+혼합 버전이 대시보드에 노출되는 경로까지 차단한다(전부 나가거나 전부 안 나가거나).
 
     python -m extract.publish_marts          # 호스트에서 수동 발행
 """
@@ -54,24 +56,34 @@ def publish_marts(
     try:
         con.execute(f"ATTACH '{duckdb_path}' AS marts_src (READ_ONLY)")
         published: dict[str, int] = {}
-        for table in MART_TABLES:
-            src_count = con.execute(
-                f"SELECT count(*) FROM marts_src.{table}"
-            ).fetchone()[0]
-            # DROP+CREATE가 한 커밋 — 읽는 쪽은 발행 전/후의 온전한 버전만 본다.
-            con.execute(
-                f"CREATE OR REPLACE TABLE {cfg.lake_alias}.{table} AS "
-                f"SELECT * FROM marts_src.{table}"
-            )
-            lake_count = con.execute(
-                f"SELECT count(*) FROM {cfg.lake_alias}.{table}"
-            ).fetchone()[0]
-            if lake_count != src_count:
-                raise RuntimeError(
-                    f"발행 불변식 위반: {table} 원본 {src_count}행 != lake {lake_count}행"
+        # 마트 전부를 DuckLake 단일 트랜잭션(=단일 스냅샷)으로 발행한다.
+        # 개별 커밋이면 fct 성공·mart 실패 시 대시보드가 "새 fct + 어제 mart"라는
+        # 존재한 적 없는 혼합 버전을 보게 된다(Phase 8 주입 실측). 마트끼리는
+        # 같은 dt의 산출물 — 함께 나가거나 함께 안 나가야 한다.
+        con.execute("BEGIN")
+        try:
+            for table in MART_TABLES:
+                src_count = con.execute(
+                    f"SELECT count(*) FROM marts_src.{table}"
+                ).fetchone()[0]
+                con.execute(
+                    f"CREATE OR REPLACE TABLE {cfg.lake_alias}.{table} AS "
+                    f"SELECT * FROM marts_src.{table}"
                 )
-            published[table] = lake_count
-            log.info("발행 %s → %s.%s (%s행)", table, cfg.lake_alias, table, lake_count)
+                lake_count = con.execute(
+                    f"SELECT count(*) FROM {cfg.lake_alias}.{table}"
+                ).fetchone()[0]
+                if lake_count != src_count:
+                    raise RuntimeError(
+                        f"발행 불변식 위반: {table} 원본 {src_count}행 != lake {lake_count}행"
+                    )
+                published[table] = lake_count
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        for table, rows in published.items():
+            log.info("발행 %s → %s.%s (%s행)", table, cfg.lake_alias, table, rows)
         return published
     finally:
         con.close()

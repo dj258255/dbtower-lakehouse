@@ -33,6 +33,9 @@ WEBHOOK_URL_ENV = "ALERT_WEBHOOK_URL"
 POST_TIMEOUT_SEC = float(os.getenv("ALERT_TIMEOUT_SEC", "5"))
 # 에러 요약 길이 상한 — 전체 스택은 로그 URL로 보게 하고, 알림은 요약만.
 ERROR_SUMMARY_MAX = 1000
+# 알림 받은 사람이 "지금 화면은 어떤 상태인가"를 한 클릭에 확인할 대시보드(Phase 8).
+# 미설정이면 필드는 None — 알림 자체는 그대로 나간다.
+DASHBOARD_URL_ENV = "METABASE_DASHBOARD_URL"
 
 
 def post_webhook(payload: dict) -> bool:
@@ -73,6 +76,7 @@ def notify_task_failure(context: dict) -> None:
             "try_number": getattr(ti, "try_number", None),
             "max_tries": getattr(ti, "max_tries", None),
             "log_url": getattr(ti, "log_url", None),
+            "dashboard_url": os.getenv(DASHBOARD_URL_ENV) or None,
             "error": (str(exc) if exc else "unknown")[:ERROR_SUMMARY_MAX],
         }
         log.warning("태스크 실패 감지 — 알림 발화: %s.%s", payload["dag_id"], payload["task_id"])

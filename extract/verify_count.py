@@ -17,16 +17,30 @@ import psycopg2
 from extract.config import RAW_PREFIX, SinkConfig, SourceConfig
 
 
-def pg_count(src: SourceConfig, dt: str) -> int:
+def _registry_instances(src: SourceConfig) -> list[int]:
+    with psycopg2.connect(src.dsn()) as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM database_instance ORDER BY id")
+        return [r[0] for r in cur.fetchall()]
+
+
+def pg_count(src: SourceConfig, dt: str, instances: list[int]) -> int:
+    """dt 하루창 원천 총 행수 — 인스턴스별 등치 루프로 인덱스 선두를 태운다.
+
+    captured_at 단독 필터는 idx_snapshot_instance_time 선두를 못 타 전체
+    Seq Scan이 된다(quality._pg_counts와 같은 이유·같은 수정).
+    """
     day_start = datetime.strptime(dt, "%Y-%m-%d")
     day_end = day_start + timedelta(days=1)
+    total = 0
     with psycopg2.connect(src.dsn()) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM query_snapshot "
-            "WHERE captured_at >= %s AND captured_at < %s",
-            (day_start, day_end),
-        )
-        return cur.fetchone()[0]
+        for iid in instances:
+            cur.execute(
+                "SELECT count(*) FROM query_snapshot "
+                "WHERE instance_id = %s AND captured_at >= %s AND captured_at < %s",
+                (iid, day_start, day_end),
+            )
+            total += cur.fetchone()[0]
+    return total
 
 
 def parquet_count(con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str) -> int:
@@ -46,11 +60,12 @@ def main(days: list[str]) -> int:
     con.execute(f"SET s3_secret_access_key='{sink.secret_key}';")
     con.execute("SET s3_use_ssl=false; SET s3_url_style='path';")
 
+    instances = _registry_instances(src)
     print(f"{'dt':<12} {'source PG':>12} {'parquet(S3)':>14}  {'match':>6}")
     print("-" * 48)
     ok = True
     for dt in days:
-        p, q = pg_count(src, dt), parquet_count(con, sink, dt)
+        p, q = pg_count(src, dt, instances), parquet_count(con, sink, dt)
         match = "OK" if p == q else "MISMATCH"
         ok = ok and (p == q)
         print(f"{dt:<12} {p:>12,} {q:>14,}  {match:>6}")

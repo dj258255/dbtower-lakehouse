@@ -21,6 +21,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from urllib.parse import urlparse
 
 import duckdb
@@ -144,12 +146,45 @@ CLOSED_LATER = "2026-07-06"   # 79,894행 (불변)
 CLOSED_EARLIER = "2026-07-05"  # 149,259행 (불변)
 
 
-def run_demo(cfg: DuckLakeConfig | None = None, sink: SinkConfig | None = None) -> None:
+def _table_exists(con, cfg: DuckLakeConfig, table: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_catalog = ? AND table_schema = 'main' AND table_name = ?",
+        [cfg.lake_alias, table],
+    ).fetchone()
+    return row is not None
+
+
+def _confirm_destructive_drop(table: str, row_count: int, force: bool) -> bool:
+    """기존 테이블을 DROP하기 전 확인 관문 — 데모가 운영 데이터를 말없이 지우면 안 된다.
+
+    허용 경로 셋: force 인자(코드 호출), DUCKLAKE_DEMO_FORCE=1(비대화형),
+    TTY 대화형 y 입력. 그 외에는 전부 거부한다(fail-closed).
+    """
+    if force or os.getenv("DUCKLAKE_DEMO_FORCE") == "1":
+        return True
+    if sys.stdin.isatty():
+        ans = input(
+            f"[경고] DuckLake 테이블 {table}({row_count:,}행)이 이미 존재한다. "
+            f"데모는 이 테이블을 DROP 후 재생성한다. 계속? [y/N] "
+        )
+        return ans.strip().lower() == "y"
+    return False
+
+
+def run_demo(
+    cfg: DuckLakeConfig | None = None,
+    sink: SinkConfig | None = None,
+    force: bool = False,
+) -> None:
     """ACID·타임트래블 전 과정을 실제로 돌려 증거 출력을 낸다.
 
     커밋을 네 번 쌓는다: CREATE → 07-06 적재 → 07-05 적재 → 한 행 UPDATE.
     그다음 타임트래블로 과거 버전이 현재와 다름을 실제 조회하고, 트랜잭션 롤백으로
     원자성을 보인다. 버전 번호는 카탈로그에서 동적으로 읽어 재실행에도 견딘다.
+
+    파괴성 주의: 재실행 대비 초기화로 기존 query_snapshot을 DROP한다. 기존
+    테이블이 있으면 확인(force / DUCKLAKE_DEMO_FORCE=1 / 대화형 y) 없이는 안 지운다.
     """
     cfg = cfg or DuckLakeConfig()
     sink = sink or SinkConfig()
@@ -161,8 +196,16 @@ def run_demo(cfg: DuckLakeConfig | None = None, sink: SinkConfig | None = None) 
     con = open_lake(cfg, sink)
     print(f"[ATTACH] ducklake:postgres → DATA_PATH {cfg.data_path}  (카탈로그=PG, 데이터=S3)")
 
-    # 재실행 대비 초기화. DROP도 하나의 스냅샷이므로 버전은 동적으로 읽는다.
-    con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
+    # 재실행 대비 초기화. 단 DROP은 파괴적이므로 기존 테이블이 있으면 확인을 요구한다.
+    if _table_exists(con, cfg, TABLE_NAME):
+        n = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
+        if not _confirm_destructive_drop(TABLE_NAME, n, force):
+            con.close()
+            raise SystemExit(
+                f"중단: 기존 {TABLE_NAME}({n:,}행) 보존. 재생성하려면 --force 또는 "
+                f"DUCKLAKE_DEMO_FORCE=1로 명시할 것."
+            )
+        con.execute(f"DROP TABLE {TABLE_NAME}")
 
     con.execute(_CREATE_TABLE)
     v_create = current_version(con, cfg)
@@ -233,5 +276,13 @@ def run_demo(cfg: DuckLakeConfig | None = None, sink: SinkConfig | None = None) 
 
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
-    run_demo()
+    parser = argparse.ArgumentParser(description="DuckLake ACID·타임트래블 데모")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="기존 query_snapshot이 있어도 확인 없이 DROP 후 재생성(파괴적)",
+    )
+    args = parser.parse_args()
+    run_demo(force=args.force)

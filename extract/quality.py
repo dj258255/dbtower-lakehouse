@@ -2,7 +2,7 @@
 
 조용히 틀린 데이터는 없는 것보다 나쁘다. raw가 반쪽만 적재됐는데 그 위에 마트를
 만들면 "악화 쿼리 랭킹"이 조용히 오답을 낸다. 이 모듈은 dt 파티션이 다운스트림에
-넘어가기 전에 세 가지를 검문한다.
+넘어가기 전에 네 가지를 검문한다.
 
   1) reconciliation(정합)  — 원천 PG 행수 == parquet 행수. 인스턴스별로 대조.
                              하나라도 어긋나면 FAIL(적재 유실·중복·부분 적재 탐지).
@@ -11,6 +11,10 @@
   3) freshness(신선도)     — 그 dt의 최신 captured_at이 하루 경계(다음날 00:00)에
                              충분히 근접한가. 임계 초과 시 WARN, 심하면 FAIL
                              (수집이 하루 중간에 끊긴 반쪽 파티션 탐지).
+  4) schema drift(스키마)  — 원천 information_schema를 offload의 SNAPSHOT_SCHEMA
+                             기대와 대조. 컬럼 유실·타입 불일치 FAIL(추출이 깨질
+                             변화), 원천에 컬럼이 늘어난 것은 WARN(추출은 되지만
+                             새 컬럼이 버려지고 있다는 신호).
 
 FAIL이 하나라도 있으면 게이트는 '차단'을 반환한다. 오케스트레이터(run_pipeline /
 Airflow DAG)는 이 결과로 dbt 실행 여부를 결정한다 — FAIL이면 변환을 돌리지 않는다.
@@ -82,17 +86,28 @@ def _registry_instances(src: SourceConfig) -> list[int]:
         return [r[0] for r in cur.fetchall()]
 
 
-def _pg_counts(src: SourceConfig, dt: str) -> dict[int, int]:
-    """원천 PG의 dt 하루창(UTC 반열림) 인스턴스별 행수."""
+def _pg_counts(src: SourceConfig, dt: str, instances: list[int]) -> dict[int, int]:
+    """원천 PG의 dt 하루창(UTC 반열림) 인스턴스별 행수.
+
+    captured_at 단독 필터는 idx_snapshot_instance_time(instance_id, captured_at)의
+    선두를 못 타 원천 전체 Seq Scan이 된다(실측 332ms/31k버퍼 vs 인덱스 20ms/76버퍼).
+    offload가 지킨 것과 같은 원칙 — 레지스트리 인스턴스별로 등치 조건을 걸어
+    인덱스 선두를 태운다. 게이트가 원천에 주는 부하도 검문 대상이다.
+    """
     day_start = datetime.strptime(dt, "%Y-%m-%d")
     day_end = day_start + timedelta(days=1)
+    counts: dict[int, int] = {}
     with psycopg2.connect(src.dsn()) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT instance_id, count(*) FROM query_snapshot "
-            "WHERE captured_at >= %s AND captured_at < %s GROUP BY instance_id",
-            (day_start, day_end),
-        )
-        return {int(r[0]): int(r[1]) for r in cur.fetchall()}
+        for iid in instances:
+            cur.execute(
+                "SELECT count(*) FROM query_snapshot "
+                "WHERE instance_id = %s AND captured_at >= %s AND captured_at < %s",
+                (iid, day_start, day_end),
+            )
+            n = int(cur.fetchone()[0])
+            if n:
+                counts[iid] = n
+    return counts
 
 
 def _parquet_counts(con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str) -> dict[int, int]:
@@ -118,6 +133,63 @@ def _parquet_max_captured(con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: 
     except duckdb.IOException:
         return None
     return row[0] if row else None
+
+
+# 원천 계약(docs/CONTRACT.md) — offload의 SNAPSHOT_SCHEMA가 기대하는 PG 컬럼·타입.
+# 원천 스키마가 여기서 벗어나면 추출이 깨지거나(유실·타입 변경 = FAIL)
+# 데이터가 조용히 버려진다(원천에만 있는 새 컬럼 = WARN).
+EXPECTED_SOURCE_COLUMNS: dict[str, str] = {
+    "id": "bigint",
+    "instance_id": "bigint",
+    "captured_at": "timestamp without time zone",
+    "query_id": "character varying",
+    "query_text": "character varying",
+    "calls": "bigint",
+    "total_time_ms": "double precision",
+    "rows_examined": "bigint",
+}
+
+
+def _source_columns(src: SourceConfig) -> dict[str, str]:
+    """원천 query_snapshot의 실제 {컬럼: data_type} — information_schema 기준."""
+    with psycopg2.connect(src.dsn()) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = 'query_snapshot'"
+        )
+        return {r[0]: r[1] for r in cur.fetchall()}
+
+
+def check_schema_drift(
+    actual: dict[str, str],
+    expected: dict[str, str] | None = None,
+) -> CheckResult:
+    """원천 스키마 vs 추출 계약 대조(순수 로직 — 테스트 대상).
+
+    - 기대 컬럼이 원천에서 사라짐 / 타입이 바뀜 → FAIL (다음 추출이 깨진다)
+    - 원천에 기대 밖 컬럼이 생김               → WARN (추출은 돌지만 그 컬럼은 버려짐)
+    """
+    expected = expected if expected is not None else EXPECTED_SOURCE_COLUMNS
+    missing = [c for c in expected if c not in actual]
+    mismatched = [
+        f"{c}: 기대 {expected[c]} != 실제 {actual[c]}"
+        for c in expected
+        if c in actual and actual[c] != expected[c]
+    ]
+    extra = [c for c in actual if c not in expected]
+    if missing or mismatched:
+        parts = []
+        if missing:
+            parts.append(f"컬럼 유실 {missing}")
+        if mismatched:
+            parts.append("타입 불일치 " + "; ".join(mismatched))
+        return CheckResult("schema_drift", FAIL, " / ".join(parts))
+    if extra:
+        return CheckResult(
+            "schema_drift", WARN,
+            f"원천에 계약 밖 컬럼 {extra} — 추출은 돌지만 이 컬럼은 버려지는 중",
+        )
+    return CheckResult("schema_drift", OK, f"기대 {len(expected)}컬럼 전부 타입 일치")
 
 
 def check_reconciliation(pg: dict[int, int], pq: dict[int, int]) -> CheckResult:
@@ -169,15 +241,18 @@ def evaluate(days: list[str]) -> list[DtReport]:
     src, sink = SourceConfig(), SinkConfig()
     registry = _registry_instances(src)
     con = _duck(sink)
+    # 스키마 드리프트는 dt와 무관한 '지금 원천' 검사 — 한 번만 재고 모든 dt에 싣는다.
+    schema_check = check_schema_drift(_source_columns(src))
     reports: list[DtReport] = []
     for dt in days:
-        pg = _pg_counts(src, dt)
+        pg = _pg_counts(src, dt, registry)
         pq = _parquet_counts(con, sink, dt)
         mx = _parquet_max_captured(con, sink, dt)
         rep = DtReport(dt=dt)
         rep.checks.append(check_reconciliation(pg, pq))
         rep.checks.append(check_completeness(registry, pq))
         rep.checks.append(check_freshness(mx, dt))
+        rep.checks.append(schema_check)
         reports.append(rep)
     return reports
 

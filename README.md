@@ -53,6 +53,15 @@ success(dbt run+test 포함), 실패 시 webhook 알림·주간 DuckLake CHECKPO
 
 ![악화 쿼리 랭킹 클로즈업](docs/images/metabase-regression.png)
 
+감사 결함 소탕(Phase 8) — 코드 감사가 잡은 결함 넷을 전/후 실측으로 수정. 핵심은
+**아카이브 자기파괴 가드**: 원천 보존(7일) 밖 dt를 backfill/Clear로 재실행하면
+delete-first 멱등 덮어쓰기가 유일본 parquet를 지우고 아무것도 안 썼다(실측 재현).
+이제 원천 0행 + 파티션 존재 시 삭제 없이 `ArchiveSelfDestructError`로 시끄럽게
+실패한다(webhook 경로 탑승). 함께: 게이트의 Seq Scan을 인스턴스별 인덱스 루프로
+(EXPLAIN 332ms → 20ms), publish를 단일 트랜잭션으로(중간 실패 시 혼합 버전 대신
+롤백), 유지보수 DAG의 데모 테이블 하드 의존 제거, 게이트 4축(스키마 드리프트),
+`tests/` 신설(pytest 35개). 전/후 실측은 [docs/VERIFICATION.md](docs/VERIFICATION.md) 9절.
+
 ## 스택 (전부 로컬에서 e2e 재현 가능)
 
 | 층 | 도구 | 선택 이유 |
@@ -62,7 +71,8 @@ success(dbt run+test 포함), 실패 시 webhook 알림·주간 DuckLake CHECKPO
 | 변환 | **dbt-core + dbt-duckdb** | SQL 기반 변환·테스트·문서화. Hive 가공의 현대판 |
 | 테이블 포맷 | **DuckLake** (카탈로그=PostgreSQL, 데이터=parquet) | ACID·타임트래블·스키마 진화 = "lake"를 "lakehouse"로. 이미 PG를 써서 카탈로그 DB 추가 0 (Iceberg는 REST 카탈로그 서버 필요라 로컬엔 과함) |
 | 쿼리 엔진 | **DuckDB** | S3 parquet 직독 + DuckLake first-class 지원. 무료·로컬·빠름 |
-| 품질 | **dbt tests (+ 필요 시 Great Expectations)** | freshness·중복·스키마 검증, 실패 시 웹훅 |
+| 품질 | **자체 4축 게이트(fail-closed) + dbt tests** | 정합·완결성·신선도·스키마 드리프트 검문, FAIL 시 다운스트림 차단 + 웹훅 |
+| 테스트 | **pytest** (`tests/`) | 게이트 판정·자기파괴 가드·발행 원자성·스키마 계약 고정(35개) |
 | 대시보드 | **Metabase** (+ MotherDuck DuckDB 드라이버) | 셀프서비스 BI 표준. DuckDB/DuckLake 커넥터가 있어 서빙 DB 추가 0. 대시보드·필터를 API로 재현 가능(scripts/metabase_bootstrap.py) |
 | 언어 | **Python 3.12** | DAG·추출 스크립트 |
 
@@ -81,5 +91,6 @@ success(dbt run+test 포함), 실패 시 webhook 알림·주간 DuckLake CHECKPO
 
 ## 로드맵
 
-[docs/ROADMAP.md](docs/ROADMAP.md) — Phase 0~7 상세(구현 방법·함정·검증 기준·산출물).
+[docs/ROADMAP.md](docs/ROADMAP.md) — Phase 0~8 상세(구현 방법·함정·검증 기준·산출물)와
+감사 백로그(다음에 할 것·안 하기로 한 것과 그 이유).
 운영 절차(장애 대응·backfill·유지보수·대시보드)는 [docs/RUNBOOK.md](docs/RUNBOOK.md).

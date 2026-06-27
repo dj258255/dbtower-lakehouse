@@ -26,7 +26,7 @@ import boto3
 from botocore.client import Config as BotoConfig
 
 from extract.config import DuckLakeConfig, SinkConfig
-from extract.ducklake_load import TABLE_NAME, open_lake
+from extract.ducklake_load import open_lake
 
 log = logging.getLogger("ducklake_maintenance")
 
@@ -62,23 +62,49 @@ def _s3_stats(s3, sink: SinkConfig, cfg: DuckLakeConfig) -> tuple[int, int]:
     return count, size
 
 
+def lake_tables(con, cfg: DuckLakeConfig) -> list[str]:
+    """카탈로그에 지금 존재하는 테이블 목록 — 하드코딩 대신 이것을 기준으로 잰다.
+
+    예전엔 데모 산출물 query_snapshot을 하드 참조했다 — 데모를 안 돌린 새 환경에선
+    주간 유지보수 DAG가 존재하지 않는 테이블 조회로 즉사했다(Phase 8 감사).
+    유지보수는 '있는 것'을 정리하는 작업이지 특정 테이블의 존재를 요구할 일이 아니다.
+    """
+    rows = con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_catalog = ? AND table_schema = 'main' ORDER BY table_name",
+        [cfg.lake_alias],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def measure(con, cfg: DuckLakeConfig, s3, sink: SinkConfig) -> dict:
-    """유지보수 전/후를 대조할 지표 — 스냅샷 수·활성 파일 수·S3 오브젝트 수·바이트."""
+    """유지보수 전/후를 대조할 지표 — 스냅샷 수·활성 파일 수·S3 오브젝트 수·바이트.
+
+    존재하는 테이블 전체(raw 데모 테이블·마트 포함)를 대상으로 잰다.
+    테이블이 하나도 없으면 지표는 0/빈 dict — 우아하게 지나간다(즉사 금지).
+    """
     snapshots = con.execute(
         f"SELECT count(*) FROM ducklake_snapshots('{cfg.lake_alias}')"
     ).fetchone()[0]
+    tables = lake_tables(con, cfg)
     # 카탈로그가 '현재 살아있다'고 보는 데이터 파일(만료로 떨어져 나간 것 제외).
-    active_files = con.execute(
-        f"SELECT count(*) FROM ducklake_list_files('{cfg.lake_alias}', '{TABLE_NAME}')"
-    ).fetchone()[0]
+    active_files = 0
+    table_rows: dict[str, int] = {}
+    for t in tables:
+        active_files += con.execute(
+            f"SELECT count(*) FROM ducklake_list_files('{cfg.lake_alias}', '{t}')"
+        ).fetchone()[0]
+        table_rows[t] = con.execute(
+            f'SELECT count(*) FROM {cfg.lake_alias}."{t}"'
+        ).fetchone()[0]
     s3_objects, s3_bytes = _s3_stats(s3, sink, cfg)
-    rows = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
     return {
         "snapshots": snapshots,
+        "tables": tables,
         "active_data_files": active_files,
         "s3_objects": s3_objects,
         "s3_bytes": s3_bytes,
-        "table_rows": rows,
+        "table_rows": table_rows,
     }
 
 
@@ -121,11 +147,13 @@ def run_maintenance(retention: str | None = None) -> dict:
             "after": after,
             "files_removed": len(removed),
         }
-        # 안전 불변식 — 유지보수는 현재 상태(행수)를 절대 바꾸면 안 된다.
+        # 안전 불변식 — 유지보수는 현재 상태(테이블별 행수)를 절대 바꾸면 안 된다.
         if before["table_rows"] != after["table_rows"]:
             raise RuntimeError(
                 f"유지보수 후 행수 변동 {before['table_rows']} → {after['table_rows']} — 즉시 조사 필요"
             )
+        if not before["tables"]:
+            log.info("카탈로그에 테이블 없음 — 스냅샷·고아 파일 정리만 수행하고 통과")
         return result
     finally:
         con.close()
@@ -140,7 +168,12 @@ def print_report(result: dict) -> None:
     print(f"{'활성 데이터 파일':<22} {b['active_data_files']:>14,} {a['active_data_files']:>14,}")
     print(f"{'S3 오브젝트 수':<22} {b['s3_objects']:>14,} {a['s3_objects']:>14,}")
     print(f"{'S3 바이트':<22} {b['s3_bytes']:>14,} {a['s3_bytes']:>14,}")
-    print(f"{'테이블 행수(불변식)':<22} {b['table_rows']:>14,} {a['table_rows']:>14,}")
+    if b["table_rows"]:
+        for t in sorted(set(b["table_rows"]) | set(a["table_rows"])):
+            print(f"{'행수(불변식) ' + t:<22} {b['table_rows'].get(t, 0):>14,} "
+                  f"{a['table_rows'].get(t, 0):>14,}")
+    else:
+        print(f"{'테이블':<22} {'(없음 — 정리만 수행)':>14}")
     print(f"삭제된 파일: {result['files_removed']}개")
 
 

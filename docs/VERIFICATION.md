@@ -512,15 +512,123 @@ TransactionContext Error: Catalog write-write conflict on alter with "minio"
 - 초기 설정→연결→질문→대시보드: `.venv/bin/python scripts/metabase_bootstrap.py`
   (멱등 — 전 과정 REST API, 절차는 docs/RUNBOOK.md 5절)
 
-## 9. 잔여 (정직)
+## 9. Phase 8 — 감사 결함 소탕 (아카이브가 자신을 지우는 경로)
+
+실측 시점: 2026-07-09. 원천 수집기(DBTower Spring 앱)는 꺼져 있어 원천
+max(captured_at)=2026-07-07 23:04 — 닫힌 창(07-05=149,259 / 07-06=79,894)만 수치로 쓴다.
+
+### 9-1. F1 — 아카이브 자기파괴 가드 (전/후 실측)
+
+시나리오: 원천 보존(7일) 밖 dt를 backfill/Clear로 재실행. 원천은 0행, MinIO의
+parquet가 유일본. 시연은 실데이터와 무관한 dt=2026-06-01에 가짜 파티션(3행,
+2,665바이트)을 심어 재현했다(원천은 읽기 전용 유지 — 시연은 MinIO에서만).
+
+수정 전(HEAD=3dc04a7) — `_delete_prefix()`가 `if table is None: continue`보다 먼저 실행:
+
+```
+INFO 기존 파티션 오브젝트 1개 삭제 (raw/query_snapshot/dt=2026-06-01/instance_id=1/)
+INFO instance 1: 해당 날짜 데이터 없음 → 스킵
+INFO 적재 완료 dt=2026-06-01 총 0행          # exit 0 — '성공'
+# after: (dt=2026-06-01 파티션 아래 오브젝트 없음)  ← 유일본 소멸, 복구 불가
+```
+
+수정 후 — 원천 0행 + 파티션 존재 시 삭제 없이 예외:
+
+```
+ArchiveSelfDestructError: 원천 0행인데 기존 파티션 오브젝트가 존재 — 보존 창 밖
+재적재로 판단. 이 파티션이 유일본일 수 있어 삭제를 거부한다(fail-closed). ...
+# exit 1 → Airflow 재시도·webhook 알림 경로 탑승
+# after: s3://lakehouse/raw/.../part-000.parquet 2665 bytes  ← 유일본 보존
+```
+
+원천 0행 + 파티션도 없음 → 스킵+로그(기존과 동일). 원천 N행 → delete→write 멱등 경로
+그대로(verify_count 재실행 ALL MATCH — 아래 9-5).
+
+### 9-2. F2 — 게이트의 Seq Scan (EXPLAIN 전/후)
+
+quality._pg_counts·verify_count.pg_count가 captured_at 단독 필터로 원천 전체를 훑었다
+— offload가 지킨 인덱스 선두 원칙(instance_id, captured_at)을 게이트 자신이 위반.
+
+```
+-- 전: WHERE captured_at >= .. AND < ..  GROUP BY instance_id
+Parallel Seq Scan on query_snapshot  (actual time=78.755..318.093 rows=49753 loops=3)
+  Rows Removed by Filter: 169683
+Buffers: shared hit=15115 read=15962   Execution Time: 332.256 ms
+
+-- 후: WHERE instance_id = %s AND captured_at >= .. AND < ..  (레지스트리 인스턴스별 루프)
+Index Only Scan using idx_snapshot_instance_time  (actual time=1.177..18.481 rows=41313)
+  Heap Fetches: 0
+Buffers: shared hit=5 read=71          Execution Time: 20.213 ms
+```
+
+게이트 전체(quality 2일치 4검문) 0.5초. 게이트가 원천에 주던 부하 자체가 검문 대상이었다.
+
+### 9-3. F3 — publish 혼합 버전 (주입 전/후 실측)
+
+수정 전: 마트 2개를 개별 커밋 — 두 번째 CREATE 직전 장애 주입 결과:
+
+```
+[주입 전] 최신 스냅샷 v31
+[주입 후] 최신 스냅샷 v32
+  v32 {'tables_created': ['main.fct_query_daily'], ...}   <- fct만 새로 발행됨
+=> 혼합 상태: 대시보드가 "새 fct + 이전 mart"를 본다
+```
+
+수정 후(BEGIN…COMMIT 단일 트랜잭션, 실패 시 ROLLBACK): 같은 주입에
+
+```
+[주입 후] 최신 스냅샷 v32 (이전 v32)  — 새 스냅샷 0개
+=> 원자성 유지: 둘 다 이전 버전(온전한 과거)
+```
+
+정상 발행은 스냅샷 하나가 두 테이블을 함께 담는다(v33: tables_created=[mart, fct]).
+시연 후 정상 발행으로 원상복구(fct 1,749행 · mart 22행).
+
+### 9-4. F4 — 유지보수 DAG의 데모 테이블 의존 (새 환경 실측)
+
+수정 전 measure()는 데모 산출물 query_snapshot을 하드 참조 — 격리된 새 카탈로그
+(ducklake_fresh_demo, 실측 후 폐기)에서 같은 질의가 즉사:
+
+```
+CatalogException: Table with name query_snapshot does not exist!
+```
+
+수정 후 — 존재하는 테이블 목록(information_schema) 기반으로 측정, 없으면 정리만:
+
+```
+스냅샷 수 1 → 1 / 활성 파일 0 / 테이블 (없음 — 정리만 수행)   # 즉사 없음
+```
+
+기존 환경에선 마트 포함 3테이블 전부 계측(행수 불변식도 테이블별로).
+run_demo의 DROP TABLE도 가드 — 기존 테이블 존재 시 확인 없이는 중단:
+
+```
+중단: 기존 query_snapshot(229,153행) 보존. 재생성하려면 --force 또는 DUCKLAKE_DEMO_FORCE=1로 명시할 것.
+```
+
+### 9-5. 회귀 없음 + pytest
+
+- `pytest -q` → **35 passed** (게이트 4검문 판정·F1 가드 순수/통합·offload 경계·발행 원자성)
+- `verify_count 2026-07-05 2026-07-06` → ALL MATCH (149,259 / 79,894)
+- `quality 2026-07-05 2026-07-06` → 4검문(정합·완결성·신선도·스키마 드리프트) 전부 OK, GATE: PASS
+- 호스트 run_pipeline(게이트→dbt run) → Completed successfully, PASS=3
+- 시연 부산물 전부 정리(가짜 파티션 삭제·scratch 카탈로그 DROP·마트 정상 재발행)
+
+## 10. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 실측 시점 기준 07-08이 열린 창이다.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을
   완벽히 분리하진 못한다(id는 스냅샷마다 새로 발번). 지문 단위 '총 활동'까지가 정직한 한계.
 - first-vs-last는 하루 중 리셋 이후 재상승분을 일부 잃는다(순리셋 219그레인). DBTower 정식 로직과의
   정합을 우선해 감수했고, 잃는 양은 클램프된 그레인 수로 계량해 두었다.
-- 품질 게이트는 규칙 기반까지다(정합·완결성·freshness). 실패 통보(웹훅)는 7-2절로 닫았지만,
-  통계적 이상 자동 감지는 여전히 범위 밖.
+- 품질 게이트는 규칙 기반까지다(정합·완결성·freshness·스키마 드리프트). 실패 통보(웹훅)는
+  7-2절로 닫았지만, 통계적 이상 자동 감지는 여전히 범위 밖.
+- F1 가드는 "원천 0행 vs 파티션 존재"까지만 본다. 원천 부분 유실(0은 아니지만 급감)은
+  여전히 덮어쓴다 — 게이트 reconciliation의 사후 탐지 영역. 쓰기 전 행수 급감 거부는
+  오탐(정당한 감소)과의 트레이드오프라 미결.
+- pytest 35개는 로컬 자산까지다 — CI 배선(커밋마다 강제)은 다음 Phase.
+- 스키마 드리프트 검사는 원천(PG) 방향만 본다. parquet 파티션 간 이질성은 읽기 시점
+  DuckDB 에러에 기댄다.
 - freshness는 dt 파티션 전체의 최신 captured_at으로 판정한다. 일부 인스턴스만 일찍 끊긴 경우
   다른 인스턴스가 경계까지 수집했으면 dt-level로는 OK가 될 수 있다(인스턴스별 freshness는 향후).
 - 마트는 여전히 전체 재빌드(table)다 — 적재가 수개월 쌓이면 증분(incremental) 모델 전환 필요.

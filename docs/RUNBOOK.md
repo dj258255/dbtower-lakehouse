@@ -98,11 +98,17 @@ docker exec lakehouse-airflow-scheduler \
   런이 순차로 흘러 원천·스케줄러를 짓누르지 않는다.
 - 여러 날짜 구간도 같은 명령에 `-s/-e`만 넓히면 된다. 단 원천 스냅샷 보존이 7일이므로
   **7일보다 오래된 dt는 원천에 이미 없다** — backfill 가능 창은 최근 7일이다.
+- **보존 창 밖 dt를 실수로 backfill/Clear 하면** offload가
+  `ArchiveSelfDestructError`로 시끄럽게 실패한다(Phase 8 가드). 원천이 0행인데
+  기존 parquet 파티션이 존재하면 그 파티션이 **유일본**일 수 있어 삭제를 거부하는
+  것 — 파티션은 그대로 보존되고 알림(webhook)이 온다. 이 에러가 오면 재시도하지
+  말고 dt를 다시 확인하라. 정말 지워야 하는 파티션이면 사람이 MinIO에서 명시적으로
+  지운 뒤 재실행한다.
 
 ### 2-3. 검증
 
 ```bash
-.venv/bin/python -m extract.quality 2026-07-06     # 게이트 3검문 PASS 확인
+.venv/bin/python -m extract.quality 2026-07-06     # 게이트 4검문 PASS 확인
 ```
 
 ## 3. DuckLake 유지보수
@@ -119,8 +125,15 @@ docker exec lakehouse-airflow-scheduler \
 .venv/bin/python -m extract.ducklake_maintenance --retention '30 days'
 ```
 
-- **불변식**: 유지보수는 현재 상태를 절대 바꾸지 않는다. 모듈이 전/후 행수를 대조해
-  다르면 예외를 던진다(그 예외도 webhook으로 온다). 이 에러는 항상 즉시 조사 대상.
+- **불변식**: 유지보수는 현재 상태를 절대 바꾸지 않는다. 모듈이 전/후 행수를
+  **테이블별로** 대조해 다르면 예외를 던진다(그 예외도 webhook으로 온다). 이 에러는
+  항상 즉시 조사 대상.
+- **대상**: 카탈로그에 지금 존재하는 테이블 전체(마트 포함)를 잰다(Phase 8 — 특정
+  테이블 하드 참조 제거). 테이블이 하나도 없는 새 환경에서도 죽지 않고 스냅샷·고아
+  파일 정리만 하고 지나간다.
+- **데모 주의**: `python -m extract.ducklake_load`(ACID·타임트래블 데모)는 기존
+  query_snapshot을 DROP 후 재생성한다. 기존 테이블이 있으면 확인 없이는 중단된다 —
+  재생성 의도가 확실할 때만 `--force` 또는 `DUCKLAKE_DEMO_FORCE=1`.
 - **트레이드오프**: 보존 기간보다 오래된 버전으로의 타임트래블은 포기한다. 대신 용량이
   유계가 된다. raw parquet 원본은 별도 경로에 그대로 있으므로 데이터 자체는 잃지 않는다.
 
