@@ -360,6 +360,62 @@ FAIL, 초과 컬럼 WARN.)
 
 ---
 
+## 실무 실태 조사 (2026-07-09 웹 리서치) — 로드맵의 근거
+
+"다음에 뭘 만들까"를 감이 아니라 실무자들이 실제로 고민하는 문제로 정하기 위해,
+서베이·커뮤니티·운영 후기를 조사했다. 요지만 남긴다(출처는 각 항목에).
+
+### Kafka 판정 — 넣지 않는 것이 실무적 정답
+
+조직 단위 채택률과 파이프라인 단위 실사용은 완전히 다른 그림이다.
+
+- 벤더 서베이는 높게 나온다 — Confluent 2025(자기 발주): "86%가 스트리밍 투자
+  우선순위". 단 이는 조직 어딘가에서 쓴다는 뜻이지 파이프라인 다수가 스트리밍이란
+  뜻이 아니다.
+- 실무 바닥은 반대다 — 시니어 패널: "'실시간' 요구의 90%를 물리쳤다",
+  "실시간 대시보드가 복잡도를 정당화하는 경우를 아직 못 봤다"
+  ([MotherDuck 패널](https://motherduck.com/blog/data-engineers-answer-10-top-reddit-questions/)).
+  BigQuery 실사용 분석: 쿼리의 90%가 100MB 미만 처리
+  ([Big Data is Dead](https://motherduck.com/blog/big-data-is-dead/)).
+  실무자 1,101명 서베이: 20.5%는 오케스트레이션조차 없이 운영
+  ([Joe Reis 2026](https://joereis.github.io/practical_data_data_eng_survey/)).
+- 채택 조건(양 진영 이견 없음): ①초~분 단위 신선도가 돈이 되고 ②동일 이벤트의
+  소비자가 여럿이고 ③분산시스템 운영 여력이 있을 때. 이 파이프라인은 셋 다 아니다
+  (스냅샷 원천·일 단위 SLA·소비자 1).
+- CDC가 필요해지면 풀 Kafka가 아니라 **Debezium Server(단독)·PeerDB류 경량 CDC**가
+  2025-2026 실무 흐름이다 — replication slot 블로트로 원천 디스크가 차는 운영 부담이
+  실증돼 있다([slot 관리](https://www.morling.dev/blog/mastering-postgres-replication-slots/)).
+  단계: 지금(폴링 배치, 충분) → 학습 목적(CDC의 본질을 Kafka 없이) → 풀 Kafka(소비자
+  2+와 분 미만 SLA가 동시에 생길 때만).
+
+### 실무 고통 TOP ↔ 이 프로젝트의 상태
+
+서베이 교차([dbt 2025](https://www.getdbt.com/resources/state-of-analytics-engineering-2025)
+· [Monte Carlo](https://www.montecarlodata.com/blog-data-quality-statistics/) ·
+[Joe Reis 2026](https://joereis.github.io/practical_data_data_eng_survey/)) 기준 순위:
+
+| 실무 고통 (근거 수치) | 이 프로젝트 |
+|---|---|
+| 1. 조용한 실패 — 스테이크홀더가 먼저 발견 74%, 해결 평균 15시간 | 품질 게이트 4축 fail-closed + webhook (Phase 4·6·8) — 정면 대응 완료. 남은 건 deadman(백로그 2) |
+| 2. 스키마 변경이 다운스트림 파괴 | 드리프트 게이트 (Phase 8) — 대응 완료. dbt contracts(백로그 5)로 마감 |
+| 3. 비용 통제 | 로컬 스택의 대응물은 스캔량·저장량 — CHECKPOINT가 파일·바이트 절감 실측 (Phase 6) |
+| 4. 백필/멱등 — "안전하게 재실행되는 파이프라인"이 프로덕션 등급의 기준 | 파티션 덮어쓰기 멱등 + backfill 실증 + 자기파괴 가드 (Phase 1·6·8) — 대응 완료 |
+| 5. 작은 파일/파티션 폭증 — 최대 4배 저하, 128MB~1GB/파일이 합의 타깃 | DuckLake CHECKPOINT 컴팩션 (Phase 6). 규모 실측(백로그 3)이 다음 |
+
+즉 이 로드맵의 다음 항목들(CI·deadman·규모 실측·롤링 윈도우·contracts)은 실무 고통
+1~5위와 그대로 겹친다 — 스트리밍 도입보다 이쪽이 실무가 향하는 방향이다.
+
+### 스택 위치 판정
+
+Airflow(오케스트레이터 점유 1위, PyPI 다운로드 2위의 10배) + dbt + Parquet/객체
+스토리지 + DuckDB(프로덕션 침투 실증 다수) + DuckLake(v1.0, 단일 엔진·low-TB·
+잦은 커밋 패턴에 적합 판정) + Metabase 조합은 2026년 기준 소규모 팀의 정석 계보다.
+멀티엔진 연합이 필요해지는 시점의 표준은 Iceberg이고, 전환은 어댑터 문제로 남긴다
+([DuckLake vs Iceberg 운영 후기](https://www.definite.app/blog/duck-lake-vs-iceberg),
+[오케스트레이션 실태](https://www.pracdata.io/p/state-of-workflow-orchestration-ecosystem-2025)).
+
+---
+
 ## 블로그 계획
 
 새 시리즈(카테고리 분리, DBTower와 별개). 0편(왜: 버려지는 7일)→1~5편(Phase별). 각 편 개선 아크.
