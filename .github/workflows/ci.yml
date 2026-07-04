@@ -20,8 +20,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     env:
-      FIXTURE_DIR: ${{ runner.temp }}/lh_fixture
-      DBT_DUCKDB_FILE: ${{ runner.temp }}/lh_ci.duckdb
+      FIXTURE_DIR: ${{ github.workspace }}/.ci_tmp/lh_fixture
+      DBT_DUCKDB_FILE: ${{ github.workspace }}/.ci_tmp/lh_ci.duckdb
     defaults:
       run:
         shell: bash
@@ -57,5 +57,5 @@ jobs:
         working-directory: dbt/dbtower_lakehouse
         env:
           # 운영 소스(MinIO s3://)를 CI 픽스처 parquet로 대체한다. 운영 경로는 불변.
-          RAW_SNAPSHOT_LOCATION: "read_parquet('${{ runner.temp }}/lh_fixture/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
+          RAW_SNAPSHOT_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
         run: dbt build --profiles-dir . --project-dir .
