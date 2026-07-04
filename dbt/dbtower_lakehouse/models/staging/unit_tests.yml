@@ -1,0 +1,19 @@
+version: 2
+
+# dbt unit tests (Phase 9) — staging의 지문 충돌 접기를 정적 입력→기대 출력으로 고정한다.
+# 데이터 테스트(not_null 등)가 "실데이터에 규칙이 성립하나"를 보는 것과 달리, unit test는
+# "로직 자체가 이 입력에 이 출력을 내나"를 원천/S3 없이(입력을 목킹) 고정한다 — CI에서 완결.
+unit_tests:
+  - name: test_staging_sums_fingerprint_collision
+    model: stg_query_snapshot
+    description: >
+      같은 (instance_id, query_id, dt, captured_at)에 지문 충돌로 두 누적 계열이
+      들어오면, staging은 그 시각의 누적값을 SUM 해 하나의 단조 계열로 접는다.
+    given:
+      - input: source('raw', 'query_snapshot')
+        rows:
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-01", captured_at: "2026-01-01 12:00:00", calls: 120, total_time_ms: 1200.0, rows_examined: 1200, query_text: "x"}
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-01", captured_at: "2026-01-01 12:00:00", calls: 80,  total_time_ms: 800.0,  rows_examined: 800,  query_text: "x"}
+    expect:
+      rows:
+        - {instance_id: 1, query_id: "q1", dt: "2026-01-01", captured_at: "2026-01-01 12:00:00", calls: 200, total_time_ms: 2000.0}

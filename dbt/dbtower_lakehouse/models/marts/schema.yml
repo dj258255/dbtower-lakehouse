@@ -1,13 +1,25 @@
 version: 2
 
+# 데이터 계약(dbt contracts, Phase 9) — 마트 스키마를 계약으로 못박는다.
+# contract.enforced: true면 dbt가 CREATE TABLE에 컬럼 이름·타입·제약을 실제로 선언하고,
+# 모델이 만들어내는 컬럼/타입이 이 선언과 어긋나면 빌드를 막는다(발행 전 마지막 방어선).
+# dbt-duckdb는 constraint를 DB 레벨로 실제 enforce하므로, 클램프 불변식(delta >= 0)까지
+# 데이터베이스가 강제한다. 타입은 실측(DESCRIBE)한 DuckDB 산출 타입 그대로다 —
+# 누적 카운터 SUM이 HUGEINT로 승격되는 것까지 계약에 반영한다.
 models:
   - name: fct_query_daily
     description: >
-      인스턴스+쿼리별 일간 발생량 팩트. 누적 카운터를 인접 스냅샷 차분(리셋 클램프)
-      으로 합산해 delta_calls/delta_total_time_ms/avg_latency_ms를 만든다.
+      인스턴스+쿼리별 일간 발생량 팩트. 누적 카운터를 하루 양 끝 차분(리셋 클램프)
+      으로 만들어 delta_calls/delta_total_time_ms/avg_latency_ms를 낸다.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: instance_id
+        data_type: bigint
         description: "database_instance FK."
+        constraints:
+          - type: not_null
         tests:
           - not_null
           # 팩트의 모든 인스턴스는 staging에 존재해야 한다(계보 무결성).
@@ -16,36 +28,83 @@ models:
                 to: ref('stg_query_snapshot')
                 field: instance_id
       - name: query_id
+        data_type: varchar
         description: "쿼리 지문 해시."
+        constraints:
+          - type: not_null
         tests:
           - not_null
       - name: dt
+        data_type: date
         description: "논리 날짜(date)."
+        constraints:
+          - type: not_null
         tests:
           - not_null
+      - name: query_text
+        data_type: varchar
+        description: "쿼리문(마지막 관측값)."
       - name: delta_calls
-        description: "하루 발생 호출수(누적 카운터 차분, 리셋은 0 클램프)."
+        data_type: hugeint
+        description: "하루 발생 호출수(누적 카운터 차분, 리셋은 0 클램프). SUM(BIGINT)→HUGEINT."
+        constraints:
+          - type: not_null
+          # 클램프 불변식을 DB가 강제 — 음수 델타가 마트에 스며들면 발행이 막힌다.
+          - type: check
+            expression: "delta_calls >= 0"
         tests:
           - not_null
       - name: delta_total_time_ms
+        data_type: double
         description: "하루 발생 총 실행시간 ms(리셋 클램프)."
+        constraints:
+          - type: not_null
+          - type: check
+            expression: "delta_total_time_ms >= 0"
         tests:
           - not_null
       - name: avg_latency_ms
+        data_type: double
         description: "delta_total_time_ms / delta_calls. delta_calls=0이면 NULL."
 
   - name: mart_query_regression
     description: >
       첫 활동일 대비 마지막 활동일 평균 지연이 악화된 쿼리 랭킹.
       0편이 못 답한 '지난 구간보다 느려진 쿼리?'에 답한다.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: instance_id
+        data_type: bigint
+        constraints:
+          - type: not_null
         tests:
           - not_null
       - name: query_id
+        data_type: varchar
+        constraints:
+          - type: not_null
         tests:
           - not_null
+      - name: query_text
+        data_type: varchar
+      - name: first_dt
+        data_type: date
+      - name: last_dt
+        data_type: date
+      - name: first_latency_ms
+        data_type: double
+      - name: last_latency_ms
+        data_type: double
       - name: latency_increase_ms
+        data_type: double
         description: "last_latency_ms - first_latency_ms(항상 양수: 악화만 남김)."
+        constraints:
+          - type: not_null
         tests:
           - not_null
+      - name: latency_increase_pct
+        data_type: double
+      - name: last_delta_calls
+        data_type: hugeint

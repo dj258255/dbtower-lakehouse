@@ -246,7 +246,7 @@ def run_demo(
         cnt = con.execute(tt_q.format(v=v)).fetchone()[0]
         print(f"  count @ {label:32s} = {cnt:,}")
 
-    print("\n=== 타임트래블 — 한 행의 값이 버전 사이에서 다름 (id={}) ===".format(target_id))
+    print(f"\n=== 타임트래블 — 한 행의 값이 버전 사이에서 다름 (id={target_id}) ===")
     val_before = con.execute(
         f"SELECT total_time_ms FROM {TABLE_NAME} AT (VERSION => {v_load05}) WHERE id = {target_id}"
     ).fetchone()[0]
@@ -255,7 +255,7 @@ def run_demo(
     ).fetchone()[0]
     print(f"  total_time_ms @ v{v_load05}(과거) = {val_before:.2f}")
     print(f"  total_time_ms @ v{v_update}(현재) = {val_now:.2f}")
-    print(f"  → 과거 버전이 UPDATE 이전 값을 그대로 보존(달라짐 확인)")
+    print("  → 과거 버전이 UPDATE 이전 값을 그대로 보존(달라짐 확인)")
 
     print("\n=== 원자성 — BEGIN … ROLLBACK ===")
     snaps_before = len(snapshots(con, cfg))

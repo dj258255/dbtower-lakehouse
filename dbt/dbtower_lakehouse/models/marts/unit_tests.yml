@@ -1,0 +1,43 @@
+version: 2
+
+# dbt unit tests (Phase 9) — 누적→일간 델타 로직의 엣지를 정적 입력→기대 출력으로 못박는다.
+# 이 로직(first-vs-last 차분 + 리셋 클램프)이 이 프로젝트의 심장이다. 실데이터가 없어도
+# CI에서 로직이 조용히 바뀌면 여기서 깨진다. 입력(ref stg)은 목킹되므로 MinIO도 PG도 불필요.
+unit_tests:
+  - name: test_delta_first_vs_last
+    model: fct_query_daily
+    description: "누적 카운터의 하루 발생량 = 그날 마지막 스냅샷 - 첫 스냅샷(양 끝 차분)."
+    given:
+      - input: ref('stg_query_snapshot')
+        rows:
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-01", captured_at: "2026-01-01 06:00:00", calls: 100, total_time_ms: 1000.0, query_text: "x"}
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-01", captured_at: "2026-01-01 12:00:00", calls: 250, total_time_ms: 2800.0, query_text: "x"}
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-01", captured_at: "2026-01-01 23:00:00", calls: 300, total_time_ms: 4000.0, query_text: "x"}
+    expect:
+      rows:
+        # 300-100=200 calls, 4000-1000=3000 ms, avg=3000/200=15.0
+        - {instance_id: 1, query_id: "q1", dt: "2026-01-01", delta_calls: 200, delta_total_time_ms: 3000.0, avg_latency_ms: 15.0}
+
+  - name: test_reset_clamps_to_zero
+    model: fct_query_daily
+    description: "하루 중 카운터 리셋(재기동)으로 last < first면 음수 델타를 GREATEST(0,..)로 0에 클램프."
+    given:
+      - input: ref('stg_query_snapshot')
+        rows:
+          - {instance_id: 2, query_id: "q2", dt: "2026-01-01", captured_at: "2026-01-01 06:00:00", calls: 500, total_time_ms: 5000.0, query_text: "y"}
+          - {instance_id: 2, query_id: "q2", dt: "2026-01-01", captured_at: "2026-01-01 23:00:00", calls: 100, total_time_ms: 1000.0, query_text: "y"}
+    expect:
+      rows:
+        # last(100) < first(500) → 클램프 0. delta_calls=0이므로 avg_latency_ms는 NULL.
+        - {instance_id: 2, query_id: "q2", dt: "2026-01-01", delta_calls: 0, delta_total_time_ms: 0.0, avg_latency_ms: null}
+
+  - name: test_single_snapshot_day_delta_zero
+    model: fct_query_daily
+    description: "하루에 스냅샷이 하나뿐이면 first==last라 델타는 0(양 끝이 같은 점)."
+    given:
+      - input: ref('stg_query_snapshot')
+        rows:
+          - {instance_id: 3, query_id: "q3", dt: "2026-01-01", captured_at: "2026-01-01 09:00:00", calls: 777, total_time_ms: 9999.0, query_text: "z"}
+    expect:
+      rows:
+        - {instance_id: 3, query_id: "q3", dt: "2026-01-01", delta_calls: 0, delta_total_time_ms: 0.0, avg_latency_ms: null}

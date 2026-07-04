@@ -8,7 +8,7 @@
 
 | 구성 | 위치 |
 |---|---|
-| DAG | `snapshot_offload`(@daily, offload → quality_gate → transform) · `ducklake_maintenance`(@weekly) |
+| DAG | `snapshot_offload`(@daily, offload → quality_gate → transform → publish → heartbeat) · `ducklake_maintenance`(@weekly) · `deadman_watch`(@hourly, 6절) |
 | 실행 환경 | `lakehouse-airflow-scheduler` 컨테이너 (커스텀 이미지 — Dockerfile, dbt는 /opt/dbt-venv) |
 | 원천 | DBTower 메타 PG `dbtower-postgres` (읽기 전용) |
 | 싱크 | MinIO `dbtower-minio`, 버킷 `lakehouse` |
@@ -196,3 +196,60 @@ docker compose up -d metabase      # 이미지 빌드에 드라이버 jar 다운
   (`docker exec lakehouse-airflow-scheduler python -m extract.publish_marts`로 수동 발행 가능).
 - 주간 `ducklake_maintenance` CHECKPOINT는 마트 테이블도 함께 정리한다(발행 커밋이
   스냅샷으로 쌓이므로 정상).
+
+## 6. deadman 감시 (heartbeat) — '미실행'까지 잡는 역방향 경보
+
+### 6-1. 왜
+
+실패 알림(2·4절의 webhook)은 태스크가 **돌다가** 실패해야 운다. 스케줄러가 통째로
+죽거나, DAG가 pause되거나, 원천 수집기가 조용히 멈춰 태스크가 **시작조차 안 하면**
+on_failure_callback은 불릴 일이 없다 — 아무도 안 운다. 이 구멍은 "성공이 주기적으로
+남겨야 할 신호가 안 남았다"는 역방향으로만 잡힌다(Phase 9).
+
+- `snapshot_offload`의 마지막 태스크 `heartbeat`가 전 단계 성공 시 카탈로그 PG
+  (`ducklake_catalog.pipeline_heartbeat`)에 `dag_id, last_success_at`을 upsert한다.
+  파일이 아니라 테이블이라 컨테이너가 죽어도 남고 SQL로 조회된다. DBTower 메타 DB는
+  건드리지 않는다(Phase 5부터의 분리).
+- `extract/deadman.py`가 그 신호가 **기한 내 갱신됐는가**를 보고, 낡았으면 같은
+  webhook 채널로 경보한다. 기본 기한 26h(@daily 24h + 2h 유예).
+
+### 6-2. 두 실행 경로 (하나는 Airflow 안, 하나는 밖)
+
+| 경로 | 무엇을 잡나 | 못 잡는 것 |
+|---|---|---|
+| Airflow `deadman_watch` DAG (@hourly) | 스케줄러가 사는 동안의 DAG pause·연속 실패·원천 침묵 | **자기 스케줄러의 death**(같이 죽으니까) |
+| 외부 `python -m extract.deadman` (host cron/systemd) | 스케줄러가 통째로 죽는 'total death'까지 | 그 외부 러너 자체의 death |
+
+**감시자는 감시 대상 밖에 있어야 total death를 잡는다.** Airflow 안의 감시 DAG만으로는
+자기 스케줄러의 죽음을 못 본다 — 그래서 외부 cron 경로를 함께 둔다. 외부 러너 예:
+
+```bash
+# crontab -e  (호스트) — 매시 정각, 카탈로그 PG·webhook은 컨테이너 밖에서도 접근 가능해야 함
+0 * * * * cd ~/Desktop/dbtower-lakehouse && ALERT_WEBHOOK_URL=<수신기> .venv/bin/python -m extract.deadman
+```
+
+- 종료코드 = 경보 발화 수(0=건강, 비영=경보). cron·systemd가 비영 종료를 자체
+  경보(메일·OnFailure)로 이중으로 태울 수 있다.
+- 감시 대상·기한은 `DEADMAN_WATCH`(예: `"snapshot_offload:26h,ducklake_maintenance:8d"`).
+
+### 6-3. 경보를 받았을 때
+
+`{"event":"pipeline_deadman", "dag_id":..., "age_hours":..., "deadline_hours":...}` 형태다.
+
+1. **age_hours가 있고 deadline 초과** → 마지막 성공(`last_success_at`) 이후 파이프라인이
+   안 돌았다. Airflow UI에서 `snapshot_offload` 최근 런 상태를 본다 — 실패면 1절로
+   (webhook 실패 알림도 왔을 것), **런 자체가 없으면** DAG가 pause됐거나 스케줄러가
+   죽은 것. `docker ps | grep lakehouse-airflow-scheduler`부터.
+2. **last_success_at이 null**(heartbeat 없음) → 한 번도 성공 못 했거나 heartbeat
+   테이블이 비었다. 새 환경이면 정상(첫 성공 전). 아니면 DAG 미실행/pause 의심.
+
+### 6-4. 배선 점검 (파이프라인 없이)
+
+```bash
+# heartbeat 수동 기록 → deadman이 건강으로 보는지
+docker exec -w /opt/airflow lakehouse-airflow-scheduler python -m extract.heartbeat snapshot_offload
+docker exec -w /opt/airflow lakehouse-airflow-scheduler python -m extract.deadman   # exit 0 = 건강
+```
+
+- heartbeat 테이블 직접 조회: `ducklake_catalog` DB의 `pipeline_heartbeat`
+  (`SELECT * FROM pipeline_heartbeat`). 원천 메타 DB(dbtower)엔 없다(오염 금지 확인용).

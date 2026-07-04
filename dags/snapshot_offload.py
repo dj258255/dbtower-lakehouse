@@ -1,6 +1,6 @@
 """snapshot_offload — query_snapshot 일 배치 파이프라인 DAG.
 
-    offload(EL) → quality_gate(품질 검문) → transform(dbt run+test) → publish(DuckLake 발행)
+    offload(EL) → quality_gate → transform(dbt run+test) → publish(DuckLake) → heartbeat
 
 매일 UTC 새벽, 논리 날짜(data_interval_start의 날짜 = '어제')의 스냅샷을
 메타 PG에서 읽어 MinIO에 parquet로 내리고(Phase 1), 품질 게이트로 검문한 뒤
@@ -103,18 +103,25 @@ def snapshot_offload():
         호스트 수동 실행에 의존했다 — 오케스트레이션의 최대 구멍. 이제 Dockerfile이
         분리 venv(/opt/dbt-venv)에 dbt-duckdb를 얹어, run과 test가 전부 이 태스크
         안에서 돈다. 모델 빌드가 되어도 테스트가 깨지면 태스크는 실패다.
+
+        test는 `--select test_type:data`로 데이터 테스트만 돌린다. dbt unit test(Phase 9)는
+        입력을 목킹하는 로직 검증이라 라이브 데이터와 무관하고(같은 결과), 외부 read_parquet
+        소스는 물리 relation이 없어 컨테이너에서 introspect도 안 된다 — unit test는 CI에서
+        커밋마다 돌린다(.github/workflows/ci.yml). 라이브 파이프라인이 재는 건 실데이터
+        품질(데이터 테스트)이다.
         """
         import subprocess
 
         dt = gate_result["dt"]
         results: dict = {"dt": dt}
-        for command in ("run", "test"):
+        commands = {
+            "run": [DBT_BIN, "run"],
+            # 데이터 테스트만 — unit test는 CI 몫(위 docstring).
+            "test": [DBT_BIN, "test", "--select", "test_type:data"],
+        }
+        for name, base in commands.items():
             proc = subprocess.run(
-                [
-                    DBT_BIN, command,
-                    "--profiles-dir", DBT_PROJECT_DIR,
-                    "--project-dir", DBT_PROJECT_DIR,
-                ],
+                [*base, "--profiles-dir", DBT_PROJECT_DIR, "--project-dir", DBT_PROJECT_DIR],
                 capture_output=True,
                 text=True,
                 timeout=1800,
@@ -123,8 +130,8 @@ def snapshot_offload():
             if proc.stderr:
                 print(proc.stderr, file=sys.stderr)
             if proc.returncode != 0:
-                raise RuntimeError(f"dbt {command} 실패 (exit {proc.returncode}) — 위 로그 참조")
-            results[f"dbt_{command}"] = "PASS"
+                raise RuntimeError(f"dbt {name} 실패 (exit {proc.returncode}) — 위 로그 참조")
+            results[f"dbt_{name}"] = "PASS"
         return results
 
     @task
@@ -144,7 +151,25 @@ def snapshot_offload():
         )
         return {"dt": transform_result["dt"], **published}
 
-    publish(transform(quality_gate(offload())))
+    @task
+    def heartbeat(publish_result: dict, **context) -> dict:
+        """성공 heartbeat 기록 — deadman 감시가 읽는 생존 신호 (Phase 9).
+
+        여기까지 왔다는 것은 offload→gate→transform→publish가 전부 성공했다는 뜻이다.
+        그 사실을 카탈로그 PG의 pipeline_heartbeat에 남긴다. 파이프라인이 실패하거나
+        (앞 태스크에서 멈춤) 스케줄러가 통째로 죽거나 DAG가 pause되면 이 태스크는
+        아예 안 돌아 heartbeat가 낡고, extract/deadman.py가 그 침묵을 잡아 경보한다.
+        on_failure_callback으로는 못 잡는 '미실행'을 이 성공 신호의 부재로 잡는다.
+        """
+        from extract.heartbeat import write_heartbeat
+
+        run_id = getattr(context.get("dag_run"), "run_id", None)
+        ts = write_heartbeat(
+            "snapshot_offload", run_id=run_id, note=f"dt={publish_result.get('dt')}"
+        )
+        return {"dt": publish_result.get("dt"), "heartbeat_at": ts.isoformat()}
+
+    heartbeat(publish(transform(quality_gate(offload()))))
 
 
 snapshot_offload()

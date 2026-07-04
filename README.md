@@ -1,5 +1,7 @@
 # dbtower-lakehouse — 버려지는 관측 데이터의 장기 분석 파이프라인
 
+[![CI](https://github.com/dj258255/dbtower-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/dj258255/dbtower-lakehouse/actions/workflows/ci.yml)
+
 > DBTower가 5기종(MySQL·PostgreSQL·SQL Server·Oracle·MongoDB)에서 수집한 쿼리 스냅샷은
 > 메타 DB 포화 방지를 위해 **7일 뒤 삭제된다**(AWS Performance Insights 기본 보존 선례).
 > 그런데 "이번 달 vs 지난달 회귀 추세", "분기 용량 계획", "기종별 성능 비교" 같은 질문은
@@ -62,6 +64,16 @@ delete-first 멱등 덮어쓰기가 유일본 parquet를 지우고 아무것도 
 롤백), 유지보수 DAG의 데모 테이블 하드 의존 제거, 게이트 4축(스키마 드리프트),
 `tests/` 신설(pytest 35개). 전/후 실측은 [docs/VERIFICATION.md](docs/VERIFICATION.md) 9절.
 
+신뢰할 수 있는 파이프라인(Phase 9) — 커밋마다 검증되고, 스케줄러가 침묵해도 잡히고,
+계약을 어기면 빌드가 막힌다. **CI**(GitHub Actions 3관문: ruff·pytest·dbt)가 커밋마다
+강제하고, 임베디드 DuckDB라 MinIO·PG 없는 러너에서도 tiny 픽스처로 dbt build를 e2e로
+돈다(모델+데이터 테스트+**계약**+**unit test 4건**). **deadman heartbeat**는 성공 시
+카탈로그 PG에 생존 신호를 남기고, 기한 내 갱신이 끊기면 역방향으로 경보한다 —
+"실패하면 운다"로는 못 잡는 '미실행'(스케줄러 death·DAG pause·원천 침묵)까지 잡는다.
+**dbt contracts**는 마트 컬럼 타입·제약을 DB 레벨로 강제해, 컬럼 타입을 바꾸면 발행 전
+빌드가 막힌다(위반 주입 → `data type mismatch`로 차단 실측). 전체 실측은
+[docs/VERIFICATION.md](docs/VERIFICATION.md) 10절, 운영 절차는 [docs/RUNBOOK.md](docs/RUNBOOK.md) 6절.
+
 ## 스택 (전부 로컬에서 e2e 재현 가능)
 
 | 층 | 도구 | 선택 이유 |
@@ -72,7 +84,7 @@ delete-first 멱등 덮어쓰기가 유일본 parquet를 지우고 아무것도 
 | 테이블 포맷 | **DuckLake** (카탈로그=PostgreSQL, 데이터=parquet) | ACID·타임트래블·스키마 진화 = "lake"를 "lakehouse"로. 이미 PG를 써서 카탈로그 DB 추가 0 (Iceberg는 REST 카탈로그 서버 필요라 로컬엔 과함) |
 | 쿼리 엔진 | **DuckDB** | S3 parquet 직독 + DuckLake first-class 지원. 무료·로컬·빠름 |
 | 품질 | **자체 4축 게이트(fail-closed) + dbt tests** | 정합·완결성·신선도·스키마 드리프트 검문, FAIL 시 다운스트림 차단 + 웹훅 |
-| 테스트 | **pytest** (`tests/`) | 게이트 판정·자기파괴 가드·발행 원자성·스키마 계약 고정(35개) |
+| 테스트 | **pytest** + **dbt unit test** + **CI**(GitHub Actions) | 게이트 판정·자기파괴 가드·발행 원자성·deadman 감시 고정(pytest 53개) + 델타 로직 엣지(dbt unit test 4) + **dbt contracts**. ruff·pytest·dbt build를 커밋마다 강제 |
 | 대시보드 | **Metabase** (+ MotherDuck DuckDB 드라이버) | 셀프서비스 BI 표준. DuckDB/DuckLake 커넥터가 있어 서빙 DB 추가 0. 대시보드·필터를 API로 재현 가능(scripts/metabase_bootstrap.py) |
 | 언어 | **Python 3.12** | DAG·추출 스크립트 |
 
@@ -91,6 +103,6 @@ delete-first 멱등 덮어쓰기가 유일본 parquet를 지우고 아무것도 
 
 ## 로드맵
 
-[docs/ROADMAP.md](docs/ROADMAP.md) — Phase 0~8 상세(구현 방법·함정·검증 기준·산출물)와
-감사 백로그(다음에 할 것·안 하기로 한 것과 그 이유).
+[docs/ROADMAP.md](docs/ROADMAP.md) — Phase 0~9 상세(구현 방법·함정·검증 기준·산출물)와
+감사 백로그(완료·다음에 할 것·안 하기로 한 것과 그 이유).
 운영 절차(장애 대응·backfill·유지보수·대시보드)는 [docs/RUNBOOK.md](docs/RUNBOOK.md).

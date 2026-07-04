@@ -1,6 +1,10 @@
 # raw 레이어 소스 선언(Phase 1 산출물). 모델 구현은 Phase 2(이 편).
 # dbt-duckdb는 external_location을 read_parquet 식으로 확장해 source()를 MinIO에 직결한다.
 # httpfs/parquet 확장과 s3 설정은 profiles.yml에서 로드된다.
+#
+# external_location은 RAW_SNAPSHOT_LOCATION 환경변수로 덮어쓸 수 있다(기본값=운영 MinIO).
+# CI(Phase 9)는 MinIO가 없으므로 이 변수를 로컬 픽스처 parquet의 read_parquet(...)로
+# 지정해 dbt build를 외부 DW 없이 e2e로 돌린다(scripts/ci_fixture.py). 운영 경로는 불변.
 version: 2
 
 sources:
@@ -8,27 +12,41 @@ sources:
     description: "Airflow snapshot_offload DAG가 MinIO에 적재한 원본 스냅샷(파티션 parquet)."
     meta:
       external_location: >-
-        read_parquet(
-          's3://lakehouse/raw/query_snapshot/dt=*/instance_id=*/*.parquet',
-          hive_partitioning = 1
-        )
+        {{ env_var('RAW_SNAPSHOT_LOCATION',
+           "read_parquet('s3://lakehouse/raw/query_snapshot/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
     tables:
       - name: query_snapshot
         description: >
           DBTower 메타 PG query_snapshot의 하루치 스냅샷. calls/total_time_ms는
           서버 기동 이후 누적 카운터(코드·실측 확인) — 일간 델타는 이 편(Phase 2)에서 계산한다.
+        # data_type을 명시하면 dbt unit test가 외부 소스(read_parquet)를 물리적으로
+        # 존재시키지 않고도 입력을 목킹할 수 있다(Phase 9 — CI에 MinIO 불필요).
+        # dt는 Hive 파티션 값이라 VARCHAR로 읽힌다(staging에서 date로 캐스팅).
         columns:
           - name: id
+            data_type: bigint
             description: "원천 PK(감사·중복 추적용). 스냅샷마다 새로 발번되어 계열 식별자는 아님."
           - name: instance_id
+            data_type: bigint
             description: "database_instance FK. 파티션 키."
           - name: captured_at
+            data_type: timestamp
             description: "수집 시각(UTC). 같은 값이 한 배치."
           - name: query_id
+            data_type: varchar
             description: "쿼리 지문 해시(최대 64자). 원천에서 지문 충돌이 관측됨(같은 지문에 복수 누적 계열)."
+          - name: query_text
+            data_type: varchar
+            description: "정규화된 쿼리문(nullable)."
           - name: calls
+            data_type: bigint
             description: "누적 호출수(구간값 아님)."
           - name: total_time_ms
+            data_type: double
             description: "누적 총 실행시간 ms(구간값 아님)."
           - name: rows_examined
+            data_type: bigint
             description: "누적 검사 행수."
+          - name: dt
+            data_type: varchar
+            description: "Hive 파티션 논리 날짜(UTC). 파일 경로 dt=YYYY-MM-DD에서 VARCHAR로 읽힘."

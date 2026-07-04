@@ -121,6 +121,15 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
   `publish` 태스크가 DuckLake로 발행한 마트만 read-only로 읽는다(파일은 프로세스 간
   단일 쓰기라 BI가 물면 transform과 충돌 — VERIFICATION 8-2절 실측). 발행은 통째
   교체(DROP+CREATE 한 커밋)이고 발행 후 행수를 원본과 대조한다(다르면 실패).
+- **생존 신호(Phase 9)**: `snapshot_offload` 성공 시 마지막 태스크 `heartbeat`가
+  `ducklake_catalog.pipeline_heartbeat`에 성공 시각을 남긴다(메타 DB 비오염). 기한
+  (기본 26h) 내 갱신이 끊기면 `deadman_watch`(@hourly)와 외부 cron이 역방향으로
+  경보한다 — 태스크 미실행(스케줄러 death·pause·원천 침묵)까지 잡는다.
+- **마트 계약(Phase 9)**: `fct_query_daily`·`mart_query_regression`은
+  `contract: enforced: true`로 컬럼 이름·타입·제약(not_null·delta>=0 CHECK)을 선언한다.
+  모델 산출이 계약과 어긋나면 빌드가 막힌다(dbt-duckdb DB 레벨 enforce). 계약은
+  `models/marts/schema.yml`이 단일 진실. 커밋마다 CI(`.github/workflows/ci.yml`)가
+  픽스처로 이 계약을 강제 검증한다.
 
 ## 8. 비계약(아직 보장 안 하는 것)
 

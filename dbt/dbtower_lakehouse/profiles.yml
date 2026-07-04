@@ -5,7 +5,9 @@ dbtower_lakehouse:
   outputs:
     dev:
       type: duckdb
-      path: "dbtower_lakehouse.duckdb"
+      # 기본은 운영/개발용 로컬 파일. CI(Phase 9)는 DBT_DUCKDB_FILE로 임시 파일을 지정해
+      # 픽스처 빌드가 이 파일을 건드리지 않게 한다(운영 기본값 불변).
+      path: "{{ env_var('DBT_DUCKDB_FILE', 'dbtower_lakehouse.duckdb') }}"
       extensions:
         - httpfs
         - parquet

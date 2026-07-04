@@ -1,0 +1,17 @@
+# ruff 설정 (Phase 9 — CI 린트).
+# 커밋마다 CI가 이 규칙으로 검사한다. 실측 파이프라인 코드라 규칙은 실용선에서 고른다:
+# 버그로 이어지는 것(F: 미사용/정의)·스타일 일관(E/I)·현대화(UP)·흔한 함정(B)만.
+# 줄 길이(E501)는 한국어 주석·SQL 리터럴이 길어 제외한다(가독성 > 폭 강제).
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "E501",  # 줄 길이 — 한국어 주석/SQL이 길다. 폭보다 의미.
+    "E741",  # 모호한 변수명(l 등) — 해당 없음이지만 안전상 제외.
+]
+
+[lint.per-file-ignores]
+# DAG 파일은 sys.path.insert 후 import 해야 해 E402(top-level import)가 불가피하다.
+"dags/*.py" = ["E402"]

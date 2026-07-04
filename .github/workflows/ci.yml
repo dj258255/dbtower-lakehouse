@@ -1,0 +1,61 @@
+# CI — 커밋마다 검증한다 (Phase 9).
+#
+# 이 스택의 강점: 쿼리 엔진(DuckDB)이 임베디드라 외부 DW·MinIO·PG 없이도 dbt build를
+# e2e로 돌릴 수 있다. 그래서 CI가 로컬 픽스처 parquet 몇 장만으로 staging→fct→mart를
+# 실제로 짓고, 데이터 테스트·계약(contract)·unit test까지 전부 러너 안에서 완결한다.
+#
+# 세 관문:
+#   1) ruff   — 린트(버그로 이어지는 미사용/정의·스타일).
+#   2) pytest — 게이트 판정·자기파괴 가드·발행 원자성·deadman 감시 로직(순수, 인프라 0).
+#   3) dbt    — deps/parse 후 픽스처로 build: 모델 + 데이터 테스트 + 4 unit test + 계약 강제.
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      FIXTURE_DIR: ${{ runner.temp }}/lh_fixture
+      DBT_DUCKDB_FILE: ${{ runner.temp }}/lh_ci.duckdb
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ruff
+
+      - name: ruff (린트)
+        run: ruff check .
+
+      - name: pytest (순수 로직 — 인프라 불필요)
+        run: pytest -q
+
+      - name: 픽스처 생성 + raw 소스 뷰 등록
+        run: python scripts/ci_fixture.py "$FIXTURE_DIR" "$DBT_DUCKDB_FILE"
+
+      - name: dbt deps / parse
+        working-directory: dbt/dbtower_lakehouse
+        run: |
+          dbt deps --profiles-dir . --project-dir .
+          dbt parse --profiles-dir . --project-dir .
+
+      - name: dbt build (모델 + 데이터 테스트 + unit test + 계약 강제)
+        working-directory: dbt/dbtower_lakehouse
+        env:
+          # 운영 소스(MinIO s3://)를 CI 픽스처 parquet로 대체한다. 운영 경로는 불변.
+          RAW_SNAPSHOT_LOCATION: "read_parquet('${{ runner.temp }}/lh_fixture/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
+        run: dbt build --profiles-dir . --project-dir .

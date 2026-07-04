@@ -311,30 +311,78 @@ ALL MATCH(07-05=149,259 / 07-06=79,894) — VERIFICATION 9절.
 
 ---
 
+## Phase 9 — 신뢰할 수 있는 파이프라인: 커밋·침묵·계약
+
+**상황**: Phase 8에서 tests/를 열어 pytest 35개로 로직을 고정했다. 그런데 그건
+**로컬 자산**이다 — 내 노트북에서만 돈다. 커밋이 그걸 강제하지 않으면 며칠 뒤
+누군가(나 포함)가 테스트를 깨고도 초록불이라 착각한다. 그리고 알림은 여전히
+"실패하면 운다"뿐인데, 감사가 실제로 지적한 사건은 정반대였다 — 원천 수집기가
+**21시간 침묵**했는데 아무 알림이 없었다(태스크가 시작조차 안 했으니 실패
+콜백도 없었다). 마지막으로 마트 스키마는 계약이 없어서, 컬럼 타입을 바꿔도
+발행 전까지 아무도 모른다(대시보드 카드가 런타임에 깨질 뿐).
+
+**한계 인지**: 세 구멍은 서로 다른 방향이다. (1) 테스트가 로컬에만 있으면 회귀를
+못 막는다. (2) "실패 감지"로는 '미실행'을 절대 못 잡는다 — 침묵은 성공의 부재로만
+잡힌다. (3) 스키마는 코드가 아니라 데이터의 형태라, SQL 리뷰로는 안 걸린다.
+
+**개선(구현)**:
+- **CI(GitHub Actions)** — `.github/workflows/ci.yml` 3관문: ruff(린트) + pytest +
+  dbt(deps/parse/build). 이 스택의 강점을 CI에서 쓴다 — 쿼리 엔진 DuckDB가 임베디드라
+  MinIO·PG 없는 러너에서 tiny 픽스처 parquet(`scripts/ci_fixture.py`)로 dbt build를
+  e2e로 돌린다(staging→fct→mart + 데이터 테스트 + 계약 + unit test 전부 러너 안에서).
+  소스 위치는 `RAW_SNAPSHOT_LOCATION` 환경변수로 스왑(운영 기본=MinIO 불변). 배지 README.
+- **dbt unit tests** — 델타 로직 엣지 4건을 정적 입력→기대 출력으로 고정: first-vs-last
+  차분, 순리셋 GREATEST(0,..) 클램프, 하루 1스냅샷 델타 0, 지문 충돌 SUM. 입력을 목킹하므로
+  실데이터 없이 CI에서 완결. dbt-duckdb 제약(외부 read_parquet 소스 introspect 불가)은
+  픽스처 뷰 등록으로 우회 — 미지원이 아니라 외부 소스 introspect의 문제(정직 표기).
+- **deadman 알림(heartbeat)** — 성공 시 heartbeat를 카탈로그 PG(ducklake_catalog,
+  서비스 추가 0, 메타 DB 비오염)에 남기고(DAG 마지막 태스크), `extract/deadman.py`가
+  "기한 내 갱신 없으면 경보"하는 역방향 감시. 두 경로: Airflow `deadman_watch`
+  DAG(@hourly, 스케줄러 사는 동안) + 외부 cron(`python -m extract.deadman`, 스케줄러
+  total death까지). 경보는 기존 webhook 재사용. Airflow /health 폴링보다 이 패턴이
+  '미실행'까지 잡는다.
+- **dbt contracts** — fct·mart에 `contract: enforced: true` + 컬럼 name/data_type/
+  constraint 선언. dbt-duckdb가 DB 레벨로 실제 enforce(클램프 delta>=0을 CHECK로).
+  발행 전 마지막 방어선.
+
+**실측(라이브)**: CI 3관문 로컬 재현(ruff pass·pytest 53·dbt build PASS=25) · unit test 4
+PASS(엣지 4종) · 계약 위반 주입 시 빌드 ERROR("data type mismatch") → 원복 PASS ·
+deadman 30h 침묵 → 경보 발화 수신(로컬 :18809 HTTP 200)·미실행 DAG 경보 · 회귀 없음
+(verify ALL MATCH 149,259/79,894, 실데이터 계약 강제 dbt run PASS=3). VERIFICATION 10절.
+
+**잔여**: 규모 실측(365dt)·롤링 윈도우·운영 대시보드화는 다음(아래 백로그) — VERIFICATION 11절.
+
+---
+
 ## 감사 백로그 (Phase 8 감사에서 정리)
 
 코드 감사가 남긴 항목의 처분을 한곳에 못박는다 — "다음에 한다"와 "안 한다"를
 구분하고, 안 하는 것엔 이유를 단다.
 
-### 다음에 할 것 (우선순위 순)
+### 완료 (Phase 9에서 소탕 — VERIFICATION 10절)
 
-1. **CI 배선 + dbt unit tests** — pytest 35개는 로컬 자산까지다. 커밋마다 강제
-   (GitHub Actions)하고, 델타 로직(순리셋·클램프)은 dbt unit test로도 고정.
-2. **deadman 알림(heartbeat)** — 지금 알림은 "실패하면 운다"다. 스케줄러가 통째로
-   죽으면 아무도 안 운다. 파이프라인 성공이 주기적으로 heartbeat를 찍고, 끊기면
-   외부에서 경보하는 역방향 감시.
-3. **365dt 규모 실측 → microbatch 증분** — 마트는 전체 재빌드다. 1년치(365dt)를
-   합성 적재해 재빌드 시간·게이트 시간을 실측하고, **그 수치를 근거로** dbt
-   microbatch 증분 전환을 판단한다(수치 없이 미리 최적화하지 않는다).
-4. **mart 롤링 윈도우 재설계** — mart_query_regression이 "전체 구간 첫날 vs
-   마지막날" 비교라 적재가 길어질수록 의미가 흐려진다. 최근 N일 롤링 창으로.
-5. **dbt contracts** — 마트 스키마를 계약으로 선언해 다운스트림(Metabase 카드)이
-   기대는 컬럼·타입 변경을 빌드 시점에 잡는다.
-6. **운영 대시보드화** — 게이트 FAIL·마지막 성공 dt·발행 지연을 Metabase 상태
-   카드로. 알림(webhook)과 화면(대시보드)의 이원화 해소.
+- [x] **CI 배선 + dbt unit tests** — GitHub Actions 3관문(ruff·pytest·dbt build)이
+  커밋마다 강제한다. 델타 로직(first-vs-last·순리셋 클램프·하루 1스냅샷·지문 SUM)은
+  dbt unit test 4건으로 고정. 임베디드 DuckDB라 tiny 픽스처로 dbt build를 CI에서 e2e.
+- [x] **deadman 알림(heartbeat)** — 성공 heartbeat를 카탈로그 PG에 남기고(DAG 마지막
+  태스크), `extract/deadman.py`가 기한 초과 시 경보(Airflow @hourly DAG + 외부 cron).
+  30h 침묵·미실행 DAG 경보 발화 실측. '미실행'을 성공의 부재로 잡는다.
+- [x] **dbt contracts** — fct·mart에 contract enforced + 컬럼 타입·CHECK 제약. 위반
+  주입 시 빌드가 막히는 것(data type mismatch) 실측 → 원복.
 
 (스키마 드리프트 게이트 4축은 백로그였으나 Phase 8에서 구현 완료 — 유실·타입 변경
 FAIL, 초과 컬럼 WARN.)
+
+### 다음에 할 것 (우선순위 순)
+
+1. **365dt 규모 실측 → microbatch 증분** — 마트는 전체 재빌드다. 1년치(365dt)를
+   합성 적재해 재빌드 시간·게이트 시간을 실측하고, **그 수치를 근거로** dbt
+   microbatch 증분 전환을 판단한다(수치 없이 미리 최적화하지 않는다).
+2. **mart 롤링 윈도우 재설계** — mart_query_regression이 "전체 구간 첫날 vs
+   마지막날" 비교라 적재가 길어질수록 의미가 흐려진다. 최근 N일 롤링 창으로.
+3. **운영 대시보드화** — 게이트 FAIL·마지막 성공 dt(heartbeat)·발행 지연을 Metabase
+   상태 카드로. 알림(webhook)과 화면(대시보드)의 이원화 해소. heartbeat 테이블이
+   이제 있으니 "마지막 성공 dt" 카드는 바로 얹을 수 있다.
 
 ### 안 하기로 한 것 (이유와 함께)
 
@@ -396,8 +444,8 @@ FAIL, 초과 컬럼 WARN.)
 
 | 실무 고통 (근거 수치) | 이 프로젝트 |
 |---|---|
-| 1. 조용한 실패 — 스테이크홀더가 먼저 발견 74%, 해결 평균 15시간 | 품질 게이트 4축 fail-closed + webhook (Phase 4·6·8) — 정면 대응 완료. 남은 건 deadman(백로그 2) |
-| 2. 스키마 변경이 다운스트림 파괴 | 드리프트 게이트 (Phase 8) — 대응 완료. dbt contracts(백로그 5)로 마감 |
+| 1. 조용한 실패 — 스테이크홀더가 먼저 발견 74%, 해결 평균 15시간 | 품질 게이트 4축 fail-closed + webhook (Phase 4·6·8) + **deadman heartbeat (Phase 9)** — '미실행'까지 대응 완료 |
+| 2. 스키마 변경이 다운스트림 파괴 | 드리프트 게이트 (Phase 8) + **dbt contracts (Phase 9)** — 발행 전 빌드 차단으로 마감 완료 |
 | 3. 비용 통제 | 로컬 스택의 대응물은 스캔량·저장량 — CHECKPOINT가 파일·바이트 절감 실측 (Phase 6) |
 | 4. 백필/멱등 — "안전하게 재실행되는 파이프라인"이 프로덕션 등급의 기준 | 파티션 덮어쓰기 멱등 + backfill 실증 + 자기파괴 가드 (Phase 1·6·8) — 대응 완료 |
 | 5. 작은 파일/파티션 폭증 — 최대 4배 저하, 128MB~1GB/파일이 합의 타깃 | DuckLake CHECKPOINT 컴팩션 (Phase 6). 규모 실측(백로그 3)이 다음 |
