@@ -1,5 +1,21 @@
 -- 일간 발생량 팩트(marts).
 --
+-- 증분(incremental) — Phase 10. 365dt 규모 실측에서 전체 재빌드(table)가 407s로
+-- 드러났다(fct는 매일 O(전체 이력)을 다시 계산). 그런데 이 팩트의 grain은 dt 단위로
+-- **완전히 독립**이다 — 하루 발생량은 그날 파티션 양 끝(first/last)의 차분이라 다른
+-- 날짜와 섞이지 않는다. 그래서 새 dt만 계산해 append/replace 하면 결과가 같다.
+-- delete+insert 전략 + unique_key=(instance_id,query_id,dt): 새 dt는 순수 insert,
+-- 같은 dt 재실행(당일 재시도·정정)은 그 dt만 삭제 후 재삽입(멱등 유지). 과거 dt(<max)
+-- 정정은 --full-refresh가 필요하다(backfill 레시피 — docs/RUNBOOK.md).
+{{
+    config(
+        materialized="incremental",
+        incremental_strategy="delete+insert",
+        unique_key=["instance_id", "query_id", "dt"],
+        on_schema_change="fail",
+    )
+}}
+--
 -- calls/total_time_ms는 누적 카운터다. 그냥 SUM 하면 무의미하고, 하루의 실제
 -- 발생량은 하루 구간 '양 끝'의 차분이다. 이는 DBTower ComparisonService의
 --   Math.max(0, end.getCalls() - start.getCalls())
@@ -24,6 +40,15 @@ with snap as (
         total_time_ms,
         query_text
     from {{ ref('stg_query_snapshot') }}
+    {% if is_incremental() %}
+    -- 워터마크(현재 fct의 max dt)를 컴파일 타임에 리터럴로 구워 넣는다. 스칼라 서브쿼리
+    -- (select max(dt) from this)로는 DuckDB가 hive 파티션 프루닝을 못 해 2190개 파일을
+    -- 전부 스캔했다(실측: 규모에서 여전히 느림). 리터럴 상수면 파티션 경로 프루닝이
+    -- 걸려 최신 dt의 파일만 읽는다 — 이게 증분의 실제 이득이다.
+    -- >= 라 최신 dt 재실행도 delete+insert로 멱등하게 갱신된다.
+    {% set max_dt = run_query("select max(dt) from " ~ this).columns[0].values()[0] %}
+    where dt >= '{{ max_dt }}'
+    {% endif %}
 
 ),
 

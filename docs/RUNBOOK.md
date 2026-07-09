@@ -111,6 +111,22 @@ docker exec lakehouse-airflow-scheduler \
 .venv/bin/python -m extract.quality 2026-07-06     # 게이트 4검문 PASS 확인
 ```
 
+### 2-4. 증분 fct와 과거 dt 정정 (Phase 10)
+
+`fct_query_daily`는 증분(delete+insert)이라, 매일 `dbt run`은 최신 dt만 다시 계산한다
+(407s→4s). 그런데 파티션 프루닝 워터마크가 `dt >= max(dt)`라, **이미 지나간 과거
+dt(< max)를 정정**하면 일반 `dbt run`은 그 dt를 건드리지 않는다. 과거 dt를 offload로
+다시 내린 뒤에는 fct를 명시적으로 다시 지어야 한다:
+
+```bash
+# 과거 dt(예: max보다 이전) 정정 후 — 그 모델만 전체 재빌드
+cd dbt/dbtower_lakehouse
+dbt run --select fct_query_daily+ --full-refresh --profiles-dir . --project-dir .
+```
+
+`+`로 다운스트림(mart)까지 함께 재빌드한다. 최신 dt 재실행(같은 날 재시도)은
+워터마크 `>=`가 잡으므로 `--full-refresh` 없이 멱등하게 갱신된다.
+
 ## 3. DuckLake 유지보수
 
 - **왜**: DuckLake는 커밋마다 스냅샷을 쌓고 덮어쓰인 파일을 타임트래블용으로 남긴다.

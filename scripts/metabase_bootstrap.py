@@ -191,13 +191,13 @@ REGRESSION_SQL = """\
 select
     instance_id,
     substr(query_id, 1, 20)        as query_id,
-    first_dt,
-    last_dt,
-    round(first_latency_ms, 2)     as first_avg_latency_ms,
-    round(last_latency_ms, 2)      as last_avg_latency_ms,
+    recent_from_dt,
+    recent_to_dt,
+    round(prior_latency_ms, 2)     as prior_avg_latency_ms,
+    round(recent_latency_ms, 2)    as recent_avg_latency_ms,
     round(latency_increase_ms, 2)  as increase_ms,
     latency_increase_pct           as increase_pct,
-    last_delta_calls,
+    recent_delta_calls,
     substr(regexp_replace(query_text, '\\s+', ' ', 'g'), 1, 60) as query
 from mart_query_regression
 where 1 = 1
@@ -224,14 +224,48 @@ where 1 = 1
   [[and instance_id = {{instance_id}}]]\
 """
 
+# ---------------------------------------------------------------- 운영 대시보드 (Phase 10)
+# 분석 대시보드(악화 쿼리)와 이원화 — 이쪽은 "파이프라인이 건강한가"를 본다.
+# 데이터 원천은 pipeline_run_log(DuckLake, publish/heartbeat가 매 런 발행).
+OP_DASHBOARD_NAME = "파이프라인 운영 상태"
+
+OP_LAST_SUCCESS_SQL = """\
+select max(dt) as last_success_dt
+from pipeline_run_log
+where gate_status <> 'FAIL'\
+"""
+
+OP_GATE_TODAY_SQL = """\
+select
+    dt,
+    gate_status,
+    gate_reconciliation,
+    gate_completeness,
+    gate_freshness,
+    gate_schema_drift,
+    run_at
+from pipeline_run_log
+order by run_at desc
+limit 1\
+"""
+
+OP_RECENT_RUNS_SQL = """\
+select
+    dt,
+    run_at,
+    gate_status,
+    round(duration_sec, 1)  as duration_sec,
+    offload_rows,
+    published_rows
+from pipeline_run_log
+order by run_at desc
+limit 30\
+"""
+
 
 def ensure_card(token: str, db_id: int, name: str, sql: str,
                 display: str, viz: dict) -> int:
-    for card in api("GET", "/api/card", token=token):
-        if card["name"] == name:
-            print(f"[card] 기존 재사용: {name} (id={card['id']})")
-            return card["id"]
-    card = api("POST", "/api/card", token=token, body={
+    body = {
         "name": name,
         "display": display,
         "visualization_settings": viz,
@@ -240,9 +274,65 @@ def ensure_card(token: str, db_id: int, name: str, sql: str,
             "database": db_id,
             "native": {"query": sql, "template-tags": {"instance_id": INSTANCE_TAG}},
         },
-    })
+    }
+    for card in api("GET", "/api/card", token=token):
+        if card["name"] == name:
+            # 코드가 진실 — 기존 카드의 SQL/viz를 현재 정의로 갱신(멱등, 스키마 변경 반영).
+            api("PUT", f"/api/card/{card['id']}", token=token, body=body)
+            print(f"[card] 갱신: {name} (id={card['id']})")
+            return card["id"]
+    card = api("POST", "/api/card", token=token, body=body)
     print(f"[card] 생성: {name} (id={card['id']})")
     return card["id"]
+
+
+def ensure_plain_card(token: str, db_id: int, name: str, sql: str,
+                      display: str, viz: dict) -> int:
+    """파라미터(instance 필터) 없는 카드 — 운영 대시보드용(파이프라인 레벨)."""
+    body = {
+        "name": name,
+        "display": display,
+        "visualization_settings": viz,
+        "dataset_query": {
+            "type": "native",
+            "database": db_id,
+            "native": {"query": sql, "template-tags": {}},
+        },
+    }
+    for card in api("GET", "/api/card", token=token):
+        if card["name"] == name:
+            api("PUT", f"/api/card/{card['id']}", token=token, body=body)
+            print(f"[card] 갱신: {name} (id={card['id']})")
+            return card["id"]
+    card = api("POST", "/api/card", token=token, body=body)
+    print(f"[card] 생성: {name} (id={card['id']})")
+    return card["id"]
+
+
+def ensure_op_dashboard(token: str, cards: dict[str, int]) -> int:
+    """운영 대시보드 — 게이트 상태·최근 런·마지막 성공 dt(pipeline_run_log 원천)."""
+    for dash in api("GET", "/api/dashboard", token=token):
+        if dash["name"] == OP_DASHBOARD_NAME:
+            print(f"[dashboard] 기존 재사용: {OP_DASHBOARD_NAME} (id={dash['id']})")
+            return dash["id"]
+    dash = api("POST", "/api/dashboard", token=token, body={
+        "name": OP_DASHBOARD_NAME,
+        "description": "알림(실패)·heartbeat(성공의 부재)에 더한 세 번째 축 — "
+                       "'지금 파이프라인이 건강한가'를 한 화면으로. 분석 대시보드와 이원화.",
+    })
+    dash_id = dash["id"]
+    api("PUT", f"/api/dashboard/{dash_id}", token=token, body={
+        "dashcards": [
+            {"id": -1, "card_id": cards["last_success"], "row": 0, "col": 0,
+             "size_x": 6, "size_y": 3},
+            {"id": -2, "card_id": cards["gate_today"], "row": 0, "col": 6,
+             "size_x": 18, "size_y": 3},
+            {"id": -3, "card_id": cards["recent_runs"], "row": 3, "col": 0,
+             "size_x": 24, "size_y": 9},
+        ],
+    })
+    print(f"[dashboard] 생성: {OP_DASHBOARD_NAME} (id={dash_id})")
+    return dash_id
 
 
 def ensure_dashboard(token: str, cards: dict[str, int]) -> int:
@@ -295,7 +385,32 @@ def main() -> None:
             "scalar", {}),
     }
     dash_id = ensure_dashboard(token, cards)
-    print(f"\n완료 — {MB_URL}/dashboard/{dash_id} ({ADMIN_EMAIL}로 로그인)")
+    print(f"[분석] {MB_URL}/dashboard/{dash_id}")
+
+    # 운영 대시보드(Phase 10) — pipeline_run_log가 있을 때만 얹는다(없으면 건너뜀).
+    # 새 테이블(run_log)은 재동기화해야 Metabase 메타데이터에 보인다.
+    api("POST", f"/api/database/{db_id}/sync_schema", token=token)
+    tables = set()
+    for _ in range(30):
+        time.sleep(2)
+        tables = {t["name"] for t in api("GET", f"/api/database/{db_id}/metadata", token=token)["tables"]}
+        if "pipeline_run_log" in tables:
+            break
+    if "pipeline_run_log" in tables:
+        op_cards = {
+            "last_success": ensure_plain_card(
+                token, db_id, "마지막 성공 dt", OP_LAST_SUCCESS_SQL, "scalar", {}),
+            "gate_today": ensure_plain_card(
+                token, db_id, "오늘 게이트 상태(최근 런)", OP_GATE_TODAY_SQL, "table", {}),
+            "recent_runs": ensure_plain_card(
+                token, db_id, "최근 파이프라인 런", OP_RECENT_RUNS_SQL, "table", {}),
+        }
+        op_dash_id = ensure_op_dashboard(token, op_cards)
+        print(f"[운영] {MB_URL}/dashboard/{op_dash_id}")
+    else:
+        print("[운영] pipeline_run_log 없음 — 운영 대시보드 건너뜀"
+              "(extract.run_log로 먼저 발행할 것)")
+    print(f"\n완료 — ({ADMIN_EMAIL}로 로그인)")
 
 
 if __name__ == "__main__":

@@ -74,6 +74,22 @@ delete-first 멱등 덮어쓰기가 유일본 parquet를 지우고 아무것도 
 빌드가 막힌다(위반 주입 → `data type mismatch`로 차단 실측). 전체 실측은
 [docs/VERIFICATION.md](docs/VERIFICATION.md) 10절, 운영 절차는 [docs/RUNBOOK.md](docs/RUNBOOK.md) 6절.
 
+규모와 서빙(Phase 10) — 며칠치로는 "규모에서도 버틴다"를 증명 못 한다. 1년치를
+만들어 재보고, 수치가 요구할 때만 최적화했다. 닫힌 dt를 날짜 시프트 복제해 **365dt×
+6인스턴스=2,190파일(54.5M행)**을 격리 프리픽스에 합성 적재(실데이터·원천 무접촉,
+실측 후 정리)하고 병목을 지목했다 — **fct 전체 재빌드 407.62s가 유일한 병목**이고
+나머지(mart 0.31s·게이트 per-dt 8–22ms·CHECKPOINT 0.47s)는 초 단위, 파일은 평균
+177KB로 128MB 타깃의 1/741(소파일 폭증 계측). 그 407s가 정당화해 fct를 증분
+(delete+insert·컴파일타임 워터마크 프루닝)으로 전환 → **407.62s → 4s(~100배)**.
+mart_query_regression은 "전체 이력 첫날 vs 마지막날"에서 **최근 7일 vs 직전 30일
+롤링 창**으로 재설계(365dt에서 랭킹 실측). 그리고 매 런 메타를 `pipeline_run_log`로
+DuckLake에 발행해 **운영 대시보드**(마지막 성공 dt·오늘 게이트 상태·최근 런)를
+분석 대시보드와 이원화했다 — 데이터 없는 07-08을 FAIL로 잡는 화면:
+
+![파이프라인 운영 상태 — 마지막 성공 dt·오늘 게이트 상태·최근 런](docs/images/lh10_ops_dashboard.png)
+
+전체 실측(규모 수치표·증분 전/후·롤링 랭킹)은 [docs/VERIFICATION.md](docs/VERIFICATION.md) 11절.
+
 ## 스택 (전부 로컬에서 e2e 재현 가능)
 
 | 층 | 도구 | 선택 이유 |
@@ -84,7 +100,7 @@ delete-first 멱등 덮어쓰기가 유일본 parquet를 지우고 아무것도 
 | 테이블 포맷 | **DuckLake** (카탈로그=PostgreSQL, 데이터=parquet) | ACID·타임트래블·스키마 진화 = "lake"를 "lakehouse"로. 이미 PG를 써서 카탈로그 DB 추가 0 (Iceberg는 REST 카탈로그 서버 필요라 로컬엔 과함) |
 | 쿼리 엔진 | **DuckDB** | S3 parquet 직독 + DuckLake first-class 지원. 무료·로컬·빠름 |
 | 품질 | **자체 4축 게이트(fail-closed) + dbt tests** | 정합·완결성·신선도·스키마 드리프트 검문, FAIL 시 다운스트림 차단 + 웹훅 |
-| 테스트 | **pytest** + **dbt unit test** + **CI**(GitHub Actions) | 게이트 판정·자기파괴 가드·발행 원자성·deadman 감시 고정(pytest 53개) + 델타 로직 엣지(dbt unit test 4) + **dbt contracts**. ruff·pytest·dbt build를 커밋마다 강제 |
+| 테스트 | **pytest** + **dbt unit test** + **CI**(GitHub Actions) | 게이트 판정·자기파괴 가드·발행 원자성·deadman 감시·런 로그 고정(pytest 57개) + 델타·롤링 윈도우 로직 엣지(dbt unit test 5) + **dbt contracts**. ruff·pytest·dbt build를 커밋마다 강제 |
 | 대시보드 | **Metabase** (+ MotherDuck DuckDB 드라이버) | 셀프서비스 BI 표준. DuckDB/DuckLake 커넥터가 있어 서빙 DB 추가 0. 대시보드·필터를 API로 재현 가능(scripts/metabase_bootstrap.py) |
 | 언어 | **Python 3.12** | DAG·추출 스크립트 |
 

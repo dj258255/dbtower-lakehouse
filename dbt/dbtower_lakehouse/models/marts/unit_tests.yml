@@ -6,6 +6,9 @@ version: 2
 unit_tests:
   - name: test_delta_first_vs_last
     model: fct_query_daily
+    overrides:
+      macros:
+        is_incremental: false
     description: "누적 카운터의 하루 발생량 = 그날 마지막 스냅샷 - 첫 스냅샷(양 끝 차분)."
     given:
       - input: ref('stg_query_snapshot')
@@ -20,6 +23,9 @@ unit_tests:
 
   - name: test_reset_clamps_to_zero
     model: fct_query_daily
+    overrides:
+      macros:
+        is_incremental: false
     description: "하루 중 카운터 리셋(재기동)으로 last < first면 음수 델타를 GREATEST(0,..)로 0에 클램프."
     given:
       - input: ref('stg_query_snapshot')
@@ -33,6 +39,9 @@ unit_tests:
 
   - name: test_single_snapshot_day_delta_zero
     model: fct_query_daily
+    overrides:
+      macros:
+        is_incremental: false
     description: "하루에 스냅샷이 하나뿐이면 first==last라 델타는 0(양 끝이 같은 점)."
     given:
       - input: ref('stg_query_snapshot')
@@ -41,3 +50,27 @@ unit_tests:
     expect:
       rows:
         - {instance_id: 3, query_id: "q3", dt: "2026-01-01", delta_calls: 0, delta_total_time_ms: 0.0, avg_latency_ms: null}
+
+  - name: test_rolling_window_recent_vs_prior
+    model: mart_query_regression
+    description: >
+      롤링 윈도우(최근 7일 vs 직전 30일) 재설계 로직 고정 — Phase 10. 최신 dt 기준
+      최근 창에서 악화된 쿼리만, 직전 창 평균과 비교해 랭킹한다. 두 창 모두 관측이
+      있어야 하고, 최근<=직전이면(개선·동일) 제외한다.
+    given:
+      - input: ref('fct_query_daily')
+        rows:
+          # qA: 최근(02-01) 20ms vs 직전(01-10) 10ms → 악화 +100%.
+          - {instance_id: 1, query_id: "qA", dt: "2026-02-01", query_text: "a", delta_calls: 200, avg_latency_ms: 20.0}
+          - {instance_id: 1, query_id: "qA", dt: "2026-01-10", query_text: "a", delta_calls: 200, avg_latency_ms: 10.0}
+          # qB: 최근==직전(둘 다 5ms) → 악화 아님, 제외.
+          - {instance_id: 1, query_id: "qB", dt: "2026-02-01", query_text: "b", delta_calls: 200, avg_latency_ms: 5.0}
+          - {instance_id: 1, query_id: "qB", dt: "2026-01-10", query_text: "b", delta_calls: 200, avg_latency_ms: 5.0}
+          # qC: 직전 창만 있고 최근 창 없음 → 비교 불가, 제외.
+          - {instance_id: 1, query_id: "qC", dt: "2026-01-10", query_text: "c", delta_calls: 200, avg_latency_ms: 9.0}
+          # qD: 저콜(임계 100 미만)이라 애초에 fct 필터로 제외.
+          - {instance_id: 1, query_id: "qD", dt: "2026-02-01", query_text: "d", delta_calls: 50, avg_latency_ms: 50.0}
+          - {instance_id: 1, query_id: "qD", dt: "2026-01-10", query_text: "d", delta_calls: 50, avg_latency_ms: 1.0}
+    expect:
+      rows:
+        - {instance_id: 1, query_id: "qA", recent_latency_ms: 20.0, prior_latency_ms: 10.0, latency_increase_ms: 10.0, latency_increase_pct: 100.0, recent_days_seen: 1, prior_days_seen: 1}

@@ -69,8 +69,9 @@ models:
 
   - name: mart_query_regression
     description: >
-      첫 활동일 대비 마지막 활동일 평균 지연이 악화된 쿼리 랭킹.
-      0편이 못 답한 '지난 구간보다 느려진 쿼리?'에 답한다.
+      롤링 윈도우(최근 N일 vs 직전 M일) 평균 지연이 악화된 쿼리 랭킹 — Phase 10 재설계.
+      전체 이력 첫날/마지막날이 아니라 최신 dt 기준 미끄러지는 창으로 비교해,
+      이력이 길어져도 '지난달 대비'의 의미를 유지한다.
     config:
       contract:
         enforced: true
@@ -89,22 +90,32 @@ models:
           - not_null
       - name: query_text
         data_type: varchar
-      - name: first_dt
+      - name: recent_from_dt
         data_type: date
-      - name: last_dt
+        description: "최근 창의 시작 dt(관측된 것 기준)."
+      - name: recent_to_dt
         data_type: date
-      - name: first_latency_ms
+        description: "최근 창의 끝 dt(= 데이터 최신 dt)."
+      - name: recent_days_seen
+        data_type: bigint
+        description: "최근 창에서 실제 관측된 dt 수."
+      - name: prior_days_seen
+        data_type: bigint
+        description: "직전 창에서 실제 관측된 dt 수."
+      - name: prior_latency_ms
         data_type: double
-      - name: last_latency_ms
+        description: "직전 창 평균 지연(일별 avg_latency의 평균)."
+      - name: recent_latency_ms
         data_type: double
+        description: "최근 창 평균 지연."
       - name: latency_increase_ms
         data_type: double
-        description: "last_latency_ms - first_latency_ms(항상 양수: 악화만 남김)."
+        description: "recent_latency_ms - prior_latency_ms(항상 양수: 악화만 남김)."
         constraints:
           - type: not_null
         tests:
           - not_null
       - name: latency_increase_pct
         data_type: double
-      - name: last_delta_calls
+      - name: recent_delta_calls
         data_type: hugeint

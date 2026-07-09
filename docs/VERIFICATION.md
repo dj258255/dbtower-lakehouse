@@ -740,7 +740,119 @@ Airflow 배선: `airflow dags list-import-errors` → No data found, `deadman_wa
 - `quality 2026-07-05 2026-07-06` → 4검문 전부 OK, GATE: PASS.
 - 시연 부산물 정리(임시 픽스처·CI duckdb 삭제, 로컬 수신기 종료, heartbeat는 현재 성공값 유지).
 
-## 11. 잔여 (정직)
+## 11. Phase 10 — 규모 실측·증분 전환·롤링 윈도우·운영 대시보드
+
+### 11-1. 365dt 합성 규모 실측 (격리·정리)
+
+닫힌 dt=2026-07-05 parquet(149,259행)를 날짜 시프트 복제해 **365dt × 6인스턴스 =
+2,190 파일(54,479,535행, 396.6MB)**을 별도 프리픽스 `s3://lakehouse/scale/`에 생성
+(`scripts/scale_synthesize.py`). 실데이터 `raw/`·원천 PG 무접촉. 최근 7일은 쿼리별
+악화계수(+50%/+150%)를 주입(롤링 윈도우 검증용). 실측 후 전부 정리(2,196 오브젝트
+삭제·`ducklake_scale` 카탈로그 DB drop, 실데이터 raw 508,155행/3dt 불변 확인).
+
+| 단계 | 실데이터(3dt·12파일) | 규모(365dt·2190파일) | 병목 |
+|---|---|---|---|
+| S3 list_objects_v2 전체 | 12 오브젝트 | 2,190 오브젝트 · **2,182ms** | 글롭 |
+| DuckDB 전체 글롭+count | 184ms (508,155행) | **3,471ms** (54,479,535행) | O(이력) |
+| **dbt fct 전체 재빌드** | <1s | **407.62s** | **1순위** |
+| dbt mart 재빌드 | ~0.3s | **0.31s** | 아니오 |
+| 게이트/verify per-dt 글롭 | 8ms | **8–22ms** | 아니오(O(1 파티션)) |
+| DuckLake CHECKPOINT(1년 커밋) | — | **0.47s** (366→1파일) | 아니오 |
+| Metabase 서빙 카드 응답 | — | **10–60ms**(마트/run_log) | 아니오 |
+| 파일 크기 | 평균 177KB | 평균 177KB (min 28KB/max 310KB) | **128MB 타깃의 1/741** |
+
+병목은 **명백히 fct 전체 재빌드(407.62s) 하나**다. 나머지는 규모에서도 초 단위 —
+mart는 사전집계라 0.31s, 게이트/verify는 dt별 파티션만 봐서 이력과 무관(8–22ms),
+CHECKPOINT는 1년치 366커밋이 쌓은 366 소파일을 1파일로 컴팩션하는 데 0.47s. 파일
+크기는 평균 177KB로 실무 합의 타깃(128MB~1GB)의 **1/741** — 소파일 폭증은 있지만
+그 고통은 (a) 글롭 리스팅(2.2s)과 (b) DuckLake 커밋 누적으로 나타나고, 후자는
+CHECKPOINT가 값싸게 흡수한다(Phase 6에서 이미 닫음).
+
+### 11-2. 증분 전환 — 수치가 정당화해서 전환 (전/후 실측)
+
+407.62s는 초 단위가 아니다 — 전체 재빌드를 매일 돌리면 이력이 1년일 때 7분이다.
+그런데 fct의 grain은 **dt 단위로 완전 독립**(하루 발생량 = 그날 파티션 양 끝 차분,
+다른 날과 안 섞임)이라 새 dt만 계산하면 결과가 같다 → 증분 전환이 정당하다.
+
+- dbt-duckdb 1.10.1 지원 전략: `append`·`delete+insert`·(DuckDB 충족 시)`merge`·
+  `microbatch`. **microbatch는 event_time 기반이고 unique_key로 파티션 교체를 못
+  하는 제약**이 있어, grain이 (instance,query,dt)인 우리엔 `delete+insert` +
+  `unique_key`가 정확·단순하다. 새 dt=순수 insert, 같은 dt 재실행=그 dt만 삭제 후
+  재삽입(멱등 유지).
+- **함정(실측)**: `where dt >= (select max(dt) from {{ this }})` 스칼라 서브쿼리로는
+  DuckDB가 hive 파티션 프루닝을 못 해 2,190파일을 전부 스캔했다(증분인데 규모에서
+  2분+ 타임아웃). 워터마크를 `run_query`로 **컴파일 타임 리터럴**로 구워 넣자
+  파티션 경로 프루닝이 걸려 최신 dt 파일만 읽었다.
+
+| | fct 전체 재빌드 | fct 증분(1 dt 추가) |
+|---|---|---|
+| 소요(wall) | **407.62s** | **4s** (실작업 ~1–2s + dbt 기동) |
+| 읽는 파일 | 2,190 | 워터마크≥ dt만(~6–12) |
+| 결과 | 194,910행/365dt | 195,444행/366dt (+534, 멱등 재실행 시 불변) |
+
+약 **100배+**. 과거 dt(<max) 정정은 `--full-refresh` 필요(backfill 레시피 —
+RUNBOOK). 실데이터 3dt에서 full-refresh `dbt run` PASS=3 → 증분 재실행 시 1,749행
+불변(멱등 확인). 계약(contract)+증분 조합은 `on_schema_change='fail'` 요구(강제).
+
+### 11-3. mart 롤링 윈도우 재설계 (365dt 실측)
+
+기존 `mart_query_regression`은 "전체 이력 첫 활동일 vs 마지막 활동일"이라 이력이
+쌓이면 "1년 전 대비 지금"이 되어 README의 "지난달 대비"와 어긋난다. 최신 dt 기준
+**최근 recent_days일 vs 직전 prior_days일**(dbt var, 기본 7 vs 30) 롤링 창으로
+재설계. 365dt 합성(최근 7일에 +50%/+150% 주입)에서 상위 랭킹:
+
+```
+inst query_id        rN pN  prior_ms recent_ms  inc_ms    pct
+  8  c5w7xa73cr06     7 30      0.78      1.87    1.08  138.1
+  3  0xDC2C76028B     7 30      0.89      1.31    0.42   47.5
+  4  -73528926589     7 30      0.49      0.73    0.23   47.5
+  8  0j5qp7xhc2tx     7 30      0.32      0.47    0.15   47.5
+  ...
+pct 분포:  +47.5% 8건 · +138.1% 6건
+```
+
+recent_days_seen=7·prior_days_seen=30 정확. 주입한 두 악화 계층이 랭킹으로 분리돼
+뜬다. 정확히 +50/+150이 아닌 +47.5/+138.1인 이유: 주입 경계(06-30~)와 롤링 창
+경계(직전 30일)가 하루 겹쳐 직전 창 평균에 boosted 하루가 섞였다 — 롤링 평균이
+그걸 정직하게 반영한 결과(창을 지어내지 않았다). dbt unit test
+`test_rolling_window_recent_vs_prior`로 로직 고정(최근>직전만·양 창 관측 필수·
+저콜 제외). **실데이터 3dt에선 mart 0행** — recent 7일이 3dt를 다 삼키고 직전
+30일이 비어 비교 불가. 이력 부족을 지어내지 않고 정직하게 빈다(규모에서만 답이 난다).
+
+### 11-4. 운영 대시보드화 (pipeline_run_log → Metabase)
+
+publish/heartbeat가 매 런 메타(dt·게이트 4축·소요·offload/published 행수·heartbeat)를
+DuckLake `pipeline_run_log`로 발행(`extract/run_log.py`). 마트와 같은 카탈로그라
+Metabase가 기존 DuckLake 커넥션으로 읽는다(서비스·커넥션 추가 0). 실데이터 닫힌
+dt로 실측 발행:
+
+| dt | gate | recon | compl | fresh | offload_rows |
+|---|---|---|---|---|---|
+| 2026-07-05 | OK | OK | OK | OK | 149,259 |
+| 2026-07-06 | OK | OK | OK | OK | 79,894 |
+| 2026-07-07 | OK | OK | OK | OK | 279,002 |
+| 2026-07-08 | **FAIL** | OK | **FAIL** | **FAIL** | (없음) |
+
+07-08(수집기 정지로 데이터 없는 날)은 completeness·freshness FAIL — 게이트가 실제로
+잡는 나쁜 날. Metabase 운영 대시보드 "파이프라인 운영 상태"(카드 3장: 마지막 성공
+dt=2026-07-07 · 오늘 게이트 상태=07-08 FAIL · 최근 런 표):
+
+![운영 대시보드 — 마지막 성공 dt·오늘 게이트 상태·최근 런](images/lh10_ops_dashboard.png)
+
+분석 대시보드(악화 쿼리)와 운영 대시보드(파이프라인 건강)를 **이원화** — 알림(실패)·
+heartbeat(성공의 부재)에 더한 세 번째 축(지금 상태의 화면). alerts payload엔 이미
+`dashboard_url` 필드가 있어(Phase 8) 알림에서 이 화면으로 한 클릭.
+
+### 11-5. 회귀 없음 + 테스트 수
+
+- `pytest -q` → **57 passed**(기존 53 + run_log 레코드 로직 4). 순수 로직이라 인프라 0.
+- dbt build(CI 픽스처) **PASS=26**(unit test 5: 기존 4 + 롤링 윈도우 1 · 계약 · 데이터
+  테스트 포함). 실데이터 full-refresh `dbt run` PASS=3 · `dbt test test_type:data` PASS=18.
+- `verify_count 2026-07-05 2026-07-06` → **ALL MATCH**(149,259/79,894 불변) · 게이트 PASS.
+- **합성 데이터 정리 완료**: scale/ 2,196오브젝트 삭제 · ducklake_scale drop · 실데이터
+  raw 508,155행/3dt·서빙 마트(fct 1,749·mart 롤링) 원상. Metabase 서빙 카드 10–60ms.
+
+## 12. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 실측 시점 기준 07-08이 열린 창이다.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을
@@ -753,7 +865,7 @@ Airflow 배선: `airflow dags list-import-errors` → No data found, `deadman_wa
   여전히 덮어쓴다 — 게이트 reconciliation의 사후 탐지 영역. 쓰기 전 행수 급감 거부는
   오탐(정당한 감소)과의 트레이드오프라 미결.
 - CI는 tiny 픽스처로 dbt build를 e2e로 돈다 — 로직·계약·스키마는 검증하지만 실데이터
-  규모(수십만 행)·MinIO/PG 통합은 CI 밖(호스트 실측)이다. 규모 실측(365dt)은 다음.
+  규모(수십만 행)·MinIO/PG 통합은 CI 밖(호스트 실측)이다 — 규모 실측(365dt)은 11절.
 - dbt unit test는 fct(모델 ref 입력)만 완전히 CI 네이티브다. stg의 소스-입력 테스트는
   외부 read_parquet를 introspect 못 해 픽스처 뷰 등록으로 우회했다(dbt-duckdb 제약).
 - deadman은 heartbeat 신선도(성공의 부재)까지다. Airflow 내 감시 DAG는 자기 스케줄러의
@@ -764,7 +876,15 @@ Airflow 배선: `airflow dags list-import-errors` → No data found, `deadman_wa
   DuckDB 에러에 기댄다.
 - freshness는 dt 파티션 전체의 최신 captured_at으로 판정한다. 일부 인스턴스만 일찍 끊긴 경우
   다른 인스턴스가 경계까지 수집했으면 dt-level로는 OK가 될 수 있다(인스턴스별 freshness는 향후).
-- 마트는 여전히 전체 재빌드(table)다 — 적재가 수개월 쌓이면 증분(incremental) 모델 전환 필요.
+- fct는 이제 증분(delete+insert)이다(Phase 10). 단 과거 dt(<max) 정정은 파티션
+  프루닝 워터마크(>= max) 밖이라 `--full-refresh`가 필요하다(backfill 레시피). mart는
+  여전히 전체 재빌드지만 사전집계라 규모에서도 0.31s(전환 불필요, 수치 근거).
+- 롤링 윈도우는 이력이 recent+prior(기본 7+30일)만큼 쌓여야 답이 난다. 실데이터
+  닫힌 dt가 3개뿐이라 실운영 mart는 0행이다 — 규모(365dt 합성)에서만 랭킹이 나온다.
+  이력이 쌓이면 실데이터에서도 채워진다(구조는 검증됨).
+- 합성 규모 실측은 파일 크기·개수를 실제와 동일하게(복제) 재현하지만, 쿼리
+  분포·카디널리티는 하루치의 반복이다. "파티션 수·파일 수"의 규모는 정확하나
+  "고유 쿼리 수 폭증"은 재현하지 않았다(그건 원천 다양성의 문제).
 - 알림은 단일 webhook 채널 하나다. 심각도 라우팅·중복 억제(dedup)·에스컬레이션은 범위 밖.
 - CHECKPOINT는 @weekly 고정이다. 카탈로그 크기·커밋 빈도에 따른 적응형 주기는 하지 않았다.
 - 대시보드의 인스턴스 필터는 숫자 id다 — 원천 database_instance(이름·기종)를 dim으로

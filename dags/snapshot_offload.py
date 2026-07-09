@@ -75,11 +75,17 @@ def snapshot_offload():
         max_active_tis_per_dag=1,
     )
     def offload(data_interval_start: datetime | None = None) -> dict:
+        from datetime import UTC
+        from datetime import datetime as _dt
+
         from extract.offload import run_offload
 
         # data_interval_start의 날짜 = 이 실행이 담당하는 논리 날짜(어제).
         logical_day = data_interval_start.date().isoformat()
-        return run_offload(logical_day)
+        result = run_offload(logical_day)
+        # 운영 대시보드용 런 시작 시각(pipeline_run_log의 소요시간 계산 기준, Phase 10).
+        result["run_started_at"] = _dt.now(UTC).isoformat()
+        return result
 
     @task(retries=0)  # 품질 FAIL은 결정적이다 — 재시도해도 그대로 FAIL이므로 즉시 차단한다.
     def quality_gate(offload_result: dict) -> dict:
@@ -88,12 +94,20 @@ def snapshot_offload():
         fail-closed의 심장. 여기서 raise하면 Airflow가 이 태스크를 failed로 표시하고,
         의존하는 transform은 upstream_failed가 되어 실행되지 않는다. 그리고
         on_failure_callback이 webhook으로 "막았다"는 사실을 사람에게 알린다.
+
+        Phase 10: 게이트 축별 상태를 결과에 실어 뒤(heartbeat)에서 pipeline_run_log로
+        발행한다 — 운영 대시보드가 "오늘 게이트 상태"를 이 값으로 그린다.
         """
-        from extract.quality import assert_gate
+        from extract.quality import evaluate, print_report
 
         dt = offload_result["dt"]
-        assert_gate([dt])  # FAIL 있으면 RuntimeError → 태스크 실패 → transform 차단
-        return {"dt": dt, "gate": "PASS"}
+        reports = evaluate([dt])
+        print_report(reports)
+        rep = reports[0]
+        axes = {c.name: c.status for c in rep.checks}
+        if rep.blocked:  # FAIL → 태스크 실패 → transform 차단(fail-closed 유지)
+            raise RuntimeError(f"품질 게이트 FAIL — 파티션 [{dt}]. 다운스트림 차단.")
+        return {**offload_result, "dt": dt, "gate": rep.status, "gate_axes": axes}
 
     @task
     def transform(gate_result: dict) -> dict:
@@ -132,7 +146,8 @@ def snapshot_offload():
             if proc.returncode != 0:
                 raise RuntimeError(f"dbt {name} 실패 (exit {proc.returncode}) — 위 로그 참조")
             results[f"dbt_{name}"] = "PASS"
-        return results
+        # gate_result의 게이트 축·offload 메타를 그대로 이어 나른다(heartbeat에서 run_log 발행).
+        return {**gate_result, **results}
 
     @task
     def publish(transform_result: dict) -> dict:
@@ -149,7 +164,8 @@ def snapshot_offload():
         published = publish_marts(
             duckdb_path=f"{DBT_PROJECT_DIR}/dbtower_lakehouse.duckdb"
         )
-        return {"dt": transform_result["dt"], **published}
+        return {**transform_result, "published": published,
+                "published_rows": sum(published.values())}
 
     @task
     def heartbeat(publish_result: dict, **context) -> dict:
@@ -161,13 +177,39 @@ def snapshot_offload():
         아예 안 돌아 heartbeat가 낡고, extract/deadman.py가 그 침묵을 잡아 경보한다.
         on_failure_callback으로는 못 잡는 '미실행'을 이 성공 신호의 부재로 잡는다.
         """
-        from extract.heartbeat import write_heartbeat
+        from datetime import datetime as _dt
 
+        from extract.heartbeat import write_heartbeat
+        from extract.run_log import append, build_record
+
+        dt = publish_result.get("dt")
         run_id = getattr(context.get("dag_run"), "run_id", None)
         ts = write_heartbeat(
-            "snapshot_offload", run_id=run_id, note=f"dt={publish_result.get('dt')}"
+            "snapshot_offload", run_id=run_id, note=f"dt={dt}"
         )
-        return {"dt": publish_result.get("dt"), "heartbeat_at": ts.isoformat()}
+
+        # 운영 대시보드용 런 메타를 pipeline_run_log(DuckLake)로 함께 발행한다(Phase 10).
+        # 알림(실패 시)·heartbeat(성공의 부재)에 더해, "지금 파이프라인 상태"를 화면으로.
+        started = publish_result.get("run_started_at")
+        duration = 0.0
+        if started:
+            duration = (ts - _dt.fromisoformat(started)).total_seconds()
+        record = build_record(
+            dt=dt,
+            gate_axes=publish_result.get("gate_axes", {}),
+            gate_status=publish_result.get("gate", "OK"),
+            duration_sec=duration,
+            run_id=run_id,
+            offload_rows=publish_result.get("total_rows"),
+            published_rows=publish_result.get("published_rows"),
+            heartbeat_at=ts,
+        )
+        try:
+            append(record)
+        except Exception:  # noqa: BLE001 — 로그 발행 실패가 성공한 런을 죽이면 안 된다.
+            import logging
+            logging.getLogger("snapshot_offload").exception("run_log 발행 실패(무시)")
+        return {"dt": dt, "heartbeat_at": ts.isoformat()}
 
     heartbeat(publish(transform(quality_gate(offload()))))
 
