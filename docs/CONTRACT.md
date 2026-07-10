@@ -2,7 +2,7 @@
 
 > 파이프라인 버그의 대부분은 "계약 불명확"에서 온다: dt 경계가 UTC냐 KST냐,
 > 파티션 키가 뭐냐, 스키마가 진화하면 옛 파일은 어떻게 읽냐.
-> 이 문서는 Extract & Load(Phase 1)가 지키는 계약을 못박는다. 코드는 이 문서를 따른다.
+> 이 문서는 Extract & Load(1단계)가 지키는 계약을 못박는다. 코드는 이 문서를 따른다.
 
 ## 1. 원천 (Source)
 
@@ -37,8 +37,8 @@
 2. **실측**: 한 쿼리를 시간순으로 뽑으면 `calls`가 61 → 204 → 348 → 700 → 1348 → 1732 로
    단조 증가하다가, 유휴 구간에는 1732로 평탄하게 유지된다(감소 없음). 누적 카운터의 전형.
 
-Phase 1(EL)은 **원본을 그대로 내리므로** 이 판단 없이도 정확하다.
-누적→일간 델타 변환은 Phase 2(dbt)의 몫이다. 여기선 사실만 기록한다.
+1단계(EL)은 **원본을 그대로 내리므로** 이 판단 없이도 정확하다.
+누적→일간 델타 변환은 2단계(dbt)의 몫이다. 여기선 사실만 기록한다.
 
 ## 2. 적재 (Sink)
 
@@ -88,10 +88,10 @@ s3://lakehouse/raw/query_snapshot/dt=YYYY-MM-DD/instance_id=N/part-000.parquet
 
 - raw(parquet 덮어쓰기) 레이어: 컬럼 추가는 append-only(뒤에 붙임)만 허용,
   기존 컬럼 타입 변경 금지. 원천 스키마를 그대로 따라간다.
-- 테이블 포맷(Phase 5, DuckLake): 스키마가 카탈로그(PG)에 박히고 변경이 버전으로
+- 테이블 포맷(5단계, DuckLake): 스키마가 카탈로그(PG)에 박히고 변경이 버전으로
   쌓인다. ADD COLUMN 등 진화가 스냅샷으로 기록돼 옛 버전 질의가 계속 가능하다.
 
-## 6. 품질 게이트 (Phase 3 — 다운스트림 전 검문)
+## 6. 품질 게이트 (3단계 — 다운스트림 전 검문)
 
 raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히 오답을 낸다. 다운스트림(dbt)에
 넘어가기 전 `extract/quality.py`가 dt 파티션을 세 축으로 검문하고, FAIL이면 변환을 차단한다(fail-closed).
@@ -106,7 +106,7 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
   `offload → quality_gate → transform → publish`. 게이트 FAIL 시 transform 이후는 실행되지 않는다.
 - 실측: `docs/VERIFICATION.md` 5절(정상 통과 + 장애주입 FAIL + Airflow 차단).
 
-## 7. 운영 계약 (Phase 6 — 실패는 통보되고, 과거는 절차로만 재적재한다)
+## 7. 운영 계약 (6단계 — 실패는 통보되고, 과거는 절차로만 재적재한다)
 
 - **실패 통보**: 태스크가 최종 실패(재시도 소진)하면 `ALERT_WEBHOOK_URL`로 JSON POST
   (dag/task/실행일/로그 URL/에러 요약). 알림 실패는 파이프라인 상태에 영향 없음(best-effort).
@@ -117,15 +117,15 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
 - **DuckLake 유지보수**: 스냅샷·파일 보존 `DUCKLAKE_RETENTION`(기본 7일, 원천 보존과 대칭).
   주간 CHECKPOINT가 그보다 오래된 버전을 만료·정리한다 — 그 이전으로의 타임트래블은
   보장하지 않는다. 유지보수는 현재 상태(행수)를 절대 바꾸지 않는다(불변식 검사).
-- **서빙(Phase 7)**: 대시보드(Metabase)는 dbt의 DuckDB 파일을 직접 열지 않는다 —
+- **서빙(7단계)**: 대시보드(Metabase)는 dbt의 DuckDB 파일을 직접 열지 않는다 —
   `publish` 태스크가 DuckLake로 발행한 마트만 read-only로 읽는다(파일은 프로세스 간
   단일 쓰기라 BI가 물면 transform과 충돌 — VERIFICATION 8-2절 실측). 발행은 통째
   교체(DROP+CREATE 한 커밋)이고 발행 후 행수를 원본과 대조한다(다르면 실패).
-- **생존 신호(Phase 9)**: `snapshot_offload` 성공 시 마지막 태스크 `heartbeat`가
+- **생존 신호(9단계)**: `snapshot_offload` 성공 시 마지막 태스크 `heartbeat`가
   `ducklake_catalog.pipeline_heartbeat`에 성공 시각을 남긴다(메타 DB 비오염). 기한
   (기본 26h) 내 갱신이 끊기면 `deadman_watch`(@hourly)와 외부 cron이 역방향으로
   경보한다 — 태스크 미실행(스케줄러 death·pause·원천 침묵)까지 잡는다.
-- **마트 계약(Phase 9)**: `fct_query_daily`·`mart_query_regression`은
+- **마트 계약(9단계)**: `fct_query_daily`·`mart_query_regression`은
   `contract: enforced: true`로 컬럼 이름·타입·제약(not_null·delta>=0 CHECK)을 선언한다.
   모델 산출이 계약과 어긋나면 빌드가 막힌다(dbt-duckdb DB 레벨 enforce). 계약은
   `models/marts/schema.yml`이 단일 진실. 커밋마다 CI(`.github/workflows/ci.yml`)가
@@ -136,5 +136,5 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
 - 지연 도착(late-arriving) 처리: raw는 "그 시점의 원천 스냅샷"만 보장.
 - 통계적 이상 자동 감지: 품질 게이트는 규칙 기반까지(실패 통보는 7절로 계약에 들어옴).
 - 알림 심각도 라우팅·중복 억제: 채널 하나에 best-effort POST까지.
-- ACID·타임트래블: Phase 5(DuckLake)에서 제공. raw 레이어 자체는 여전히
+- ACID·타임트래블: 5단계(DuckLake)에서 제공. raw 레이어 자체는 여전히
   "lake"(파티션 덮어쓰기)이고, 그 위에 테이블 포맷을 얹은 것이 house다.

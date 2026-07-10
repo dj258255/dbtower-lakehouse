@@ -61,7 +61,7 @@ curl -s --max-time 5 http://localhost:19000/minio/health/live -o /dev/null -w '%
 ## 2. backfill 레시피
 
 `catchup=False`는 유지한다 — DAG 정지·재배포 후 Airflow가 밀린 날짜를 **무의도로 대량
-자동 실행**하는 걸 막기 위해서다(Phase 0 결정). 과거 날짜는 아래처럼 **명시적으로만** 돌린다.
+자동 실행**하는 걸 막기 위해서다(0단계 결정). 과거 날짜는 아래처럼 **명시적으로만** 돌린다.
 
 ### 2-1. 날짜 산수부터 — 논리 실행일과 처리 dt는 하루 어긋난다
 
@@ -99,7 +99,7 @@ docker exec lakehouse-airflow-scheduler \
 - 여러 날짜 구간도 같은 명령에 `-s/-e`만 넓히면 된다. 단 원천 스냅샷 보존이 7일이므로
   **7일보다 오래된 dt는 원천에 이미 없다** — backfill 가능 창은 최근 7일이다.
 - **보존 창 밖 dt를 실수로 backfill/Clear 하면** offload가
-  `ArchiveSelfDestructError`로 시끄럽게 실패한다(Phase 8 가드). 원천이 0행인데
+  `ArchiveSelfDestructError`로 시끄럽게 실패한다(8단계 가드). 원천이 0행인데
   기존 parquet 파티션이 존재하면 그 파티션이 **유일본**일 수 있어 삭제를 거부하는
   것 — 파티션은 그대로 보존되고 알림(webhook)이 온다. 이 에러가 오면 재시도하지
   말고 dt를 다시 확인하라. 정말 지워야 하는 파티션이면 사람이 MinIO에서 명시적으로
@@ -111,7 +111,7 @@ docker exec lakehouse-airflow-scheduler \
 .venv/bin/python -m extract.quality 2026-07-06     # 게이트 4검문 PASS 확인
 ```
 
-### 2-4. 증분 fct와 과거 dt 정정 (Phase 10)
+### 2-4. 증분 fct와 과거 dt 정정 (10단계)
 
 `fct_query_daily`는 증분(delete+insert)이라, 매일 `dbt run`은 최신 dt만 다시 계산한다
 (407s→4s). 그런데 파티션 프루닝 워터마크가 `dt >= max(dt)`라, **이미 지나간 과거
@@ -144,7 +144,7 @@ dbt run --select fct_query_daily+ --full-refresh --profiles-dir . --project-dir 
 - **불변식**: 유지보수는 현재 상태를 절대 바꾸지 않는다. 모듈이 전/후 행수를
   **테이블별로** 대조해 다르면 예외를 던진다(그 예외도 webhook으로 온다). 이 에러는
   항상 즉시 조사 대상.
-- **대상**: 카탈로그에 지금 존재하는 테이블 전체(마트 포함)를 잰다(Phase 8 — 특정
+- **대상**: 카탈로그에 지금 존재하는 테이블 전체(마트 포함)를 잰다(8단계 — 특정
   테이블 하드 참조 제거). 테이블이 하나도 없는 새 환경에서도 죽지 않고 스냅샷·고아
   파일 정리만 하고 지나간다.
 - **데모 주의**: `python -m extract.ducklake_load`(ACID·타임트래블 데모)는 기존
@@ -220,12 +220,12 @@ docker compose up -d metabase      # 이미지 빌드에 드라이버 jar 다운
 실패 알림(2·4절의 webhook)은 태스크가 **돌다가** 실패해야 운다. 스케줄러가 통째로
 죽거나, DAG가 pause되거나, 원천 수집기가 조용히 멈춰 태스크가 **시작조차 안 하면**
 on_failure_callback은 불릴 일이 없다 — 아무도 안 운다. 이 구멍은 "성공이 주기적으로
-남겨야 할 신호가 안 남았다"는 역방향으로만 잡힌다(Phase 9).
+남겨야 할 신호가 안 남았다"는 역방향으로만 잡힌다(9단계).
 
 - `snapshot_offload`의 마지막 태스크 `heartbeat`가 전 단계 성공 시 카탈로그 PG
   (`ducklake_catalog.pipeline_heartbeat`)에 `dag_id, last_success_at`을 upsert한다.
   파일이 아니라 테이블이라 컨테이너가 죽어도 남고 SQL로 조회된다. DBTower 메타 DB는
-  건드리지 않는다(Phase 5부터의 분리).
+  건드리지 않는다(5단계부터의 분리).
 - `extract/deadman.py`가 그 신호가 **기한 내 갱신됐는가**를 보고, 낡았으면 같은
   webhook 채널로 경보한다. 기본 기한 26h(@daily 24h + 2h 유예).
 
