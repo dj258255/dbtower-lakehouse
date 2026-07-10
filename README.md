@@ -15,6 +15,22 @@
 
 ![dbtower-lakehouse 파이프라인 — query_snapshot을 Airflow로 추출·적재하고 dbt로 집계해 DuckDB로 질의, 사이에 데이터 품질 게이트](docs/architecture.svg)
 
+### 상세 아키텍처
+
+위 그림의 상세판 — 컨테이너 경계·포트(15432/19000/8080/13001), 태스크 체인
+`offload → quality_gate → transform → publish → heartbeat`, 품질 FAIL 시 webhook 분기,
+heartbeat를 역방향으로 감시하는 deadman, 주간 CHECKPOINT까지 한 장에 담았다.
+
+![상세 서버/데이터 아키텍처 — Airflow 태스크 체인·MinIO 경로 레이아웃·DuckLake 카탈로그(PG)/데이터(S3) 분리·Metabase read-only](docs/architecture-detail.svg)
+
+### 데이터 모델
+
+원천 2테이블 → raw parquet(파티션 키) → staging(SUM 정규화) → `fct_query_daily`(일간 델타)
+→ `mart_query_regression`(롤링 윈도우)과 운영 테이블(`pipeline_run_log`·`pipeline_heartbeat`)의
+실제 컬럼·타입·계보. "누적 → 일간 델타" 변환 지점을 표기했다.
+
+![데이터 모델 — 원천에서 마트·운영 테이블까지의 컬럼 계보와 누적→일간 델타 변환 지점](docs/erd.svg)
+
 ## 실측 화면
 
 Airflow가 `snapshot_offload` DAG를 성공적으로 실행(추출·적재):

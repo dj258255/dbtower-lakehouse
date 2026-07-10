@@ -1,0 +1,262 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 890" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">
+  <style>
+    .bg   { fill:#ffffff; }
+    .card { fill:#f8fafc; stroke:#cbd5e1; }
+    .lake { fill:#faf5ff; stroke:#c4b5fd; stroke-width:1.5; stroke-dasharray:6 5; }
+    .minio{ fill:#eef2ff; stroke:#c7d2fe; }
+    .marts{ fill:#ecfdf5; stroke:#a7f3d0; }
+    .gate { fill:#fffbeb; stroke:#fcd34d; }
+    .hline{ stroke:#cbd5e1; stroke-width:1; }
+    .title { fill:#0f172a; font-weight:700; }
+    .mid   { fill:#1e293b; font-weight:600; }
+    .sub   { fill:#475569; }
+    .cap   { fill:#64748b; font-weight:600; letter-spacing:.4px; }
+    .label { fill:#334155; }
+    .mono  { fill:#334155; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .a-flow{ stroke:#6366f1; fill:none; stroke-width:2; }
+    .h-flow{ fill:#6366f1; }
+    .a-gate{ stroke:#d97706; fill:none; stroke-width:2; stroke-dasharray:5 4; }
+    .h-gate{ fill:#d97706; }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill:#0b1220; }
+      .card { fill:#111827; stroke:#334155; }
+      .lake { fill:#1a132e; stroke:#6d28d9; }
+      .minio{ fill:#1e1b4b; stroke:#3730a3; }
+      .marts{ fill:#052e2b; stroke:#134e4a; }
+      .gate { fill:#3b2f0b; stroke:#a16207; }
+      .hline{ stroke:#334155; }
+      .title { fill:#e2e8f0; }
+      .mid   { fill:#cbd5e1; }
+      .sub   { fill:#94a3b8; }
+      .cap   { fill:#94a3b8; }
+      .label { fill:#cbd5e1; }
+      .mono  { fill:#cbd5e1; }
+      .a-flow{ stroke:#818cf8; }
+      .h-flow{ fill:#818cf8; }
+      .a-gate{ stroke:#fbbf24; }
+      .h-gate{ fill:#fbbf24; }
+    }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1480" height="890" rx="14"/>
+
+  <!-- 섹션 캡션 -->
+  <text class="cap" x="165" y="46" font-size="12" text-anchor="middle">원천 · PG dbtower (15432)</text>
+  <text class="cap" x="490" y="182" font-size="12" text-anchor="middle">raw · MinIO Parquet</text>
+  <text class="cap" x="820" y="182" font-size="12" text-anchor="middle">staging · dbt(DuckDB)</text>
+  <text class="cap" x="1295" y="62" font-size="12" text-anchor="middle">marts · dbt(contract)</text>
+  <text class="cap" x="665" y="512" font-size="12" text-anchor="middle">운영 테이블 — snapshot_offload 성공 시 heartbeat 태스크가 기록</text>
+
+  <!-- ===== database_instance ===== -->
+  <rect class="card" x="30" y="62" width="270" height="96" rx="10"/>
+  <text class="title" x="165" y="84" font-size="13" text-anchor="middle">database_instance</text>
+  <text class="cap" x="165" y="99" font-size="9.5" text-anchor="middle">원천 PG · 인스턴스 레지스트리</text>
+  <line class="hline" x1="44" y1="107" x2="286" y2="107"/>
+  <text class="mono" x="44" y="124" font-size="11">id</text>
+  <text class="sub" x="286" y="124" font-size="10" text-anchor="end">bigint PK</text>
+  <text class="sub" x="165" y="144" font-size="9.5" text-anchor="middle">추출은 등록된 id 목록을 인스턴스별로 루프</text>
+
+  <!-- ===== query_snapshot ===== -->
+  <rect class="card" x="30" y="210" width="270" height="250" rx="10"/>
+  <text class="title" x="165" y="232" font-size="13" text-anchor="middle">query_snapshot</text>
+  <text class="cap" x="165" y="247" font-size="9.5" text-anchor="middle">원천 PG · 7일 보존 · 누적 카운터</text>
+  <line class="hline" x1="44" y1="255" x2="286" y2="255"/>
+  <text class="mono" x="44" y="272" font-size="11">id</text>
+  <text class="sub" x="286" y="272" font-size="10" text-anchor="end">bigint PK</text>
+  <text class="mono" x="44" y="291" font-size="11">instance_id</text>
+  <text class="sub" x="286" y="291" font-size="10" text-anchor="end">bigint FK</text>
+  <text class="mono" x="44" y="310" font-size="11">captured_at</text>
+  <text class="sub" x="286" y="310" font-size="10" text-anchor="end">timestamp(6) UTC</text>
+  <text class="mono" x="44" y="329" font-size="11">query_id</text>
+  <text class="sub" x="286" y="329" font-size="10" text-anchor="end">varchar(64)</text>
+  <text class="mono" x="44" y="348" font-size="11">query_text</text>
+  <text class="sub" x="286" y="348" font-size="10" text-anchor="end">varchar(4000) NULL</text>
+  <text class="mono" x="44" y="367" font-size="11">calls</text>
+  <text class="sub" x="286" y="367" font-size="10" text-anchor="end">bigint 누적</text>
+  <text class="mono" x="44" y="386" font-size="11">total_time_ms</text>
+  <text class="sub" x="286" y="386" font-size="10" text-anchor="end">double 누적</text>
+  <text class="mono" x="44" y="405" font-size="11">rows_examined</text>
+  <text class="sub" x="286" y="405" font-size="10" text-anchor="end">bigint 누적</text>
+  <text class="sub" x="165" y="432" font-size="9.5" text-anchor="middle">인덱스 (instance_id, captured_at)</text>
+
+  <!-- FK: query_snapshot.instance_id → database_instance.id -->
+  <path class="a-flow" d="M110 210 L110 166"/>
+  <polygon class="h-flow" points="110,158 105,168 115,168"/>
+  <text class="label" x="120" y="190" font-size="9.5">N:1 (instance_id → id)</text>
+
+  <!-- ===== raw parquet ===== -->
+  <rect class="minio" x="350" y="200" width="280" height="270" rx="10"/>
+  <text class="title" x="490" y="222" font-size="13" text-anchor="middle">raw/query_snapshot</text>
+  <text class="cap" x="490" y="237" font-size="9.5" text-anchor="middle">MinIO Parquet · SNAPSHOT_SCHEMA 고정 선언</text>
+  <line class="hline" x1="364" y1="245" x2="616" y2="245"/>
+  <text class="mono" x="364" y="262" font-size="11">id</text>
+  <text class="sub" x="616" y="262" font-size="10" text-anchor="end">int64</text>
+  <text class="mono" x="364" y="281" font-size="11">instance_id</text>
+  <text class="sub" x="616" y="281" font-size="10" text-anchor="end">int64</text>
+  <text class="mono" x="364" y="300" font-size="11">captured_at</text>
+  <text class="sub" x="616" y="300" font-size="10" text-anchor="end">timestamp[us]</text>
+  <text class="mono" x="364" y="319" font-size="11">query_id</text>
+  <text class="sub" x="616" y="319" font-size="10" text-anchor="end">string</text>
+  <text class="mono" x="364" y="338" font-size="11">query_text</text>
+  <text class="sub" x="616" y="338" font-size="10" text-anchor="end">string NULL</text>
+  <text class="mono" x="364" y="357" font-size="11">calls</text>
+  <text class="sub" x="616" y="357" font-size="10" text-anchor="end">int64 누적</text>
+  <text class="mono" x="364" y="376" font-size="11">total_time_ms</text>
+  <text class="sub" x="616" y="376" font-size="10" text-anchor="end">float64 누적</text>
+  <text class="mono" x="364" y="395" font-size="11">rows_examined</text>
+  <text class="sub" x="616" y="395" font-size="10" text-anchor="end">int64 누적</text>
+  <rect class="gate" x="364" y="408" width="252" height="48" rx="6"/>
+  <text class="sub" x="490" y="426" font-size="9.5" text-anchor="middle">파티션 키: dt=YYYY-MM-DD / instance_id=N</text>
+  <text class="sub" x="490" y="444" font-size="9.5" text-anchor="middle">Hive 경로 → dt는 varchar로 읽힘(staging에서 캐스팅)</text>
+
+  <!-- ===== stg_query_snapshot ===== -->
+  <rect class="card" x="680" y="200" width="280" height="260" rx="10"/>
+  <text class="title" x="820" y="222" font-size="13" text-anchor="middle">stg_query_snapshot</text>
+  <text class="cap" x="820" y="237" font-size="9.5" text-anchor="middle">dbt staging · 지문 충돌 계열 SUM 정규화</text>
+  <line class="hline" x1="694" y1="245" x2="946" y2="245"/>
+  <text class="mono" x="694" y="262" font-size="11">instance_id</text>
+  <text class="sub" x="946" y="262" font-size="10" text-anchor="end">그룹 키</text>
+  <text class="mono" x="694" y="281" font-size="11">query_id</text>
+  <text class="sub" x="946" y="281" font-size="10" text-anchor="end">그룹 키</text>
+  <text class="mono" x="694" y="300" font-size="11">dt</text>
+  <text class="sub" x="946" y="300" font-size="10" text-anchor="end">date 캐스팅 · 그룹 키</text>
+  <text class="mono" x="694" y="319" font-size="11">captured_at</text>
+  <text class="sub" x="946" y="319" font-size="10" text-anchor="end">그룹 키</text>
+  <text class="mono" x="694" y="338" font-size="11">calls</text>
+  <text class="sub" x="946" y="338" font-size="10" text-anchor="end">SUM(누적 유지)</text>
+  <text class="mono" x="694" y="357" font-size="11">total_time_ms</text>
+  <text class="sub" x="946" y="357" font-size="10" text-anchor="end">SUM(누적 유지)</text>
+  <text class="mono" x="694" y="376" font-size="11">rows_examined</text>
+  <text class="sub" x="946" y="376" font-size="10" text-anchor="end">SUM(누적 유지)</text>
+  <text class="mono" x="694" y="395" font-size="11">query_text</text>
+  <text class="sub" x="946" y="395" font-size="10" text-anchor="end">MAX(대표값)</text>
+  <text class="sub" x="820" y="422" font-size="9.5" text-anchor="middle">그레인: instance_id · query_id · dt · captured_at</text>
+  <text class="sub" x="820" y="440" font-size="9.5" text-anchor="middle">단조 비감소 누적 계열 복원(가짜 리셋 제거)</text>
+
+  <!-- ===== fct_query_daily ===== -->
+  <rect class="marts" x="1140" y="80" width="310" height="232" rx="10"/>
+  <text class="title" x="1295" y="102" font-size="13" text-anchor="middle">fct_query_daily</text>
+  <text class="cap" x="1295" y="117" font-size="9.5" text-anchor="middle">contract enforced · 증분(delete+insert)</text>
+  <line class="hline" x1="1154" y1="125" x2="1436" y2="125"/>
+  <text class="mono" x="1154" y="142" font-size="11">instance_id</text>
+  <text class="sub" x="1436" y="142" font-size="10" text-anchor="end">bigint NN</text>
+  <text class="mono" x="1154" y="161" font-size="11">query_id</text>
+  <text class="sub" x="1436" y="161" font-size="10" text-anchor="end">varchar NN</text>
+  <text class="mono" x="1154" y="180" font-size="11">dt</text>
+  <text class="sub" x="1436" y="180" font-size="10" text-anchor="end">date NN</text>
+  <text class="mono" x="1154" y="199" font-size="11">query_text</text>
+  <text class="sub" x="1436" y="199" font-size="10" text-anchor="end">varchar</text>
+  <text class="mono" x="1154" y="218" font-size="11">delta_calls</text>
+  <text class="sub" x="1436" y="218" font-size="10" text-anchor="end">hugeint NN · CHECK ≥ 0</text>
+  <text class="mono" x="1154" y="237" font-size="11">delta_total_time_ms</text>
+  <text class="sub" x="1436" y="237" font-size="10" text-anchor="end">double NN · CHECK ≥ 0</text>
+  <text class="mono" x="1154" y="256" font-size="11">avg_latency_ms</text>
+  <text class="sub" x="1436" y="256" font-size="10" text-anchor="end">double</text>
+  <text class="sub" x="1295" y="282" font-size="9.5" text-anchor="middle">그레인: instance × query × dt (하루 1행)</text>
+  <text class="sub" x="1295" y="298" font-size="9.5" text-anchor="middle">unique_key = (instance_id, query_id, dt)</text>
+
+  <!-- ===== 누적 → 일간 델타 변환 지점 ===== -->
+  <rect class="gate" x="985" y="170" width="140" height="96" rx="10"/>
+  <text class="mid" x="1055" y="192" font-size="11" text-anchor="middle">누적 → 일간 델타</text>
+  <text class="sub" x="1055" y="210" font-size="9.5" text-anchor="middle">변환 지점</text>
+  <text class="sub" x="1055" y="228" font-size="9.5" text-anchor="middle">하루 first/last 차분</text>
+  <text class="sub" x="1055" y="246" font-size="9.5" text-anchor="middle">GREATEST(0,…) 클램프</text>
+  <path class="a-gate" d="M1055 266 L1055 290"/>
+
+  <!-- 계보 화살표 -->
+  <path class="a-flow" d="M300 330 L342 330"/>
+  <polygon class="h-flow" points="350,330 340,325 340,335"/>
+  <text class="label" x="325" y="320" font-size="9.5" text-anchor="middle">offload</text>
+
+  <path class="a-flow" d="M630 330 L672 330"/>
+  <polygon class="h-flow" points="680,330 670,325 670,335"/>
+  <text class="label" x="655" y="320" font-size="9.5" text-anchor="middle">source()</text>
+
+  <path class="a-flow" d="M960 290 L1132 290"/>
+  <polygon class="h-flow" points="1140,290 1130,285 1130,295"/>
+
+  <path class="a-flow" d="M1295 312 L1295 422"/>
+  <polygon class="h-flow" points="1295,430 1290,420 1300,420"/>
+  <text class="label" x="1305" y="366" font-size="9.5">롤링 창 집계</text>
+  <text class="label" x="1305" y="382" font-size="9.5">최근 7일 vs 직전 30일</text>
+
+  <!-- ===== mart_query_regression ===== -->
+  <rect class="marts" x="1140" y="430" width="310" height="322" rx="10"/>
+  <text class="title" x="1295" y="452" font-size="13" text-anchor="middle">mart_query_regression</text>
+  <text class="cap" x="1295" y="467" font-size="9.5" text-anchor="middle">contract enforced · 롤링 윈도우 악화 랭킹</text>
+  <line class="hline" x1="1154" y1="475" x2="1436" y2="475"/>
+  <text class="mono" x="1154" y="492" font-size="11">instance_id</text>
+  <text class="sub" x="1436" y="492" font-size="10" text-anchor="end">bigint NN</text>
+  <text class="mono" x="1154" y="511" font-size="11">query_id</text>
+  <text class="sub" x="1436" y="511" font-size="10" text-anchor="end">varchar NN</text>
+  <text class="mono" x="1154" y="530" font-size="11">query_text</text>
+  <text class="sub" x="1436" y="530" font-size="10" text-anchor="end">varchar</text>
+  <text class="mono" x="1154" y="549" font-size="11">recent_from_dt</text>
+  <text class="sub" x="1436" y="549" font-size="10" text-anchor="end">date</text>
+  <text class="mono" x="1154" y="568" font-size="11">recent_to_dt</text>
+  <text class="sub" x="1436" y="568" font-size="10" text-anchor="end">date</text>
+  <text class="mono" x="1154" y="587" font-size="11">recent_days_seen</text>
+  <text class="sub" x="1436" y="587" font-size="10" text-anchor="end">bigint</text>
+  <text class="mono" x="1154" y="606" font-size="11">prior_days_seen</text>
+  <text class="sub" x="1436" y="606" font-size="10" text-anchor="end">bigint</text>
+  <text class="mono" x="1154" y="625" font-size="11">prior_latency_ms</text>
+  <text class="sub" x="1436" y="625" font-size="10" text-anchor="end">double</text>
+  <text class="mono" x="1154" y="644" font-size="11">recent_latency_ms</text>
+  <text class="sub" x="1436" y="644" font-size="10" text-anchor="end">double</text>
+  <text class="mono" x="1154" y="663" font-size="11">latency_increase_ms</text>
+  <text class="sub" x="1436" y="663" font-size="10" text-anchor="end">double NN</text>
+  <text class="mono" x="1154" y="682" font-size="11">latency_increase_pct</text>
+  <text class="sub" x="1436" y="682" font-size="10" text-anchor="end">double</text>
+  <text class="mono" x="1154" y="701" font-size="11">recent_delta_calls</text>
+  <text class="sub" x="1436" y="701" font-size="10" text-anchor="end">hugeint</text>
+  <text class="sub" x="1295" y="728" font-size="9.5" text-anchor="middle">그레인: instance × query · 악화만(증가폭 내림차순)</text>
+
+  <!-- ===== pipeline_heartbeat ===== -->
+  <rect class="lake" x="350" y="530" width="280" height="170" rx="10"/>
+  <text class="title" x="490" y="552" font-size="13" text-anchor="middle">pipeline_heartbeat</text>
+  <text class="cap" x="490" y="567" font-size="9.5" text-anchor="middle">PG ducklake_catalog · dag_id당 1행 upsert</text>
+  <line class="hline" x1="364" y1="575" x2="616" y2="575"/>
+  <text class="mono" x="364" y="592" font-size="11">dag_id</text>
+  <text class="sub" x="616" y="592" font-size="10" text-anchor="end">text PK</text>
+  <text class="mono" x="364" y="611" font-size="11">last_success_at</text>
+  <text class="sub" x="616" y="611" font-size="10" text-anchor="end">timestamptz NN</text>
+  <text class="mono" x="364" y="630" font-size="11">run_id</text>
+  <text class="sub" x="616" y="630" font-size="10" text-anchor="end">text</text>
+  <text class="mono" x="364" y="649" font-size="11">note</text>
+  <text class="sub" x="616" y="649" font-size="10" text-anchor="end">text</text>
+  <text class="sub" x="490" y="678" font-size="9.5" text-anchor="middle">deadman_watch(@hourly)가 신선도 감시</text>
+
+  <!-- ===== pipeline_run_log ===== -->
+  <rect class="lake" x="680" y="530" width="300" height="310" rx="10"/>
+  <text class="title" x="830" y="552" font-size="13" text-anchor="middle">pipeline_run_log</text>
+  <text class="cap" x="830" y="567" font-size="9.5" text-anchor="middle">DuckLake 테이블 · 런마다 INSERT(append-only)</text>
+  <line class="hline" x1="694" y1="575" x2="966" y2="575"/>
+  <text class="mono" x="694" y="592" font-size="11">dt</text>
+  <text class="sub" x="966" y="592" font-size="10" text-anchor="end">DATE</text>
+  <text class="mono" x="694" y="611" font-size="11">run_id</text>
+  <text class="sub" x="966" y="611" font-size="10" text-anchor="end">VARCHAR</text>
+  <text class="mono" x="694" y="630" font-size="11">run_at</text>
+  <text class="sub" x="966" y="630" font-size="10" text-anchor="end">TIMESTAMP</text>
+  <text class="mono" x="694" y="649" font-size="11">duration_sec</text>
+  <text class="sub" x="966" y="649" font-size="10" text-anchor="end">DOUBLE</text>
+  <text class="mono" x="694" y="668" font-size="11">gate_status</text>
+  <text class="sub" x="966" y="668" font-size="10" text-anchor="end">VARCHAR</text>
+  <text class="mono" x="694" y="687" font-size="11">gate_reconciliation</text>
+  <text class="sub" x="966" y="687" font-size="10" text-anchor="end">VARCHAR</text>
+  <text class="mono" x="694" y="706" font-size="11">gate_completeness</text>
+  <text class="sub" x="966" y="706" font-size="10" text-anchor="end">VARCHAR</text>
+  <text class="mono" x="694" y="725" font-size="11">gate_freshness</text>
+  <text class="sub" x="966" y="725" font-size="10" text-anchor="end">VARCHAR</text>
+  <text class="mono" x="694" y="744" font-size="11">gate_schema_drift</text>
+  <text class="sub" x="966" y="744" font-size="10" text-anchor="end">VARCHAR</text>
+  <text class="mono" x="694" y="763" font-size="11">offload_rows</text>
+  <text class="sub" x="966" y="763" font-size="10" text-anchor="end">BIGINT</text>
+  <text class="mono" x="694" y="782" font-size="11">published_rows</text>
+  <text class="sub" x="966" y="782" font-size="10" text-anchor="end">BIGINT</text>
+  <text class="mono" x="694" y="801" font-size="11">heartbeat_at</text>
+  <text class="sub" x="966" y="801" font-size="10" text-anchor="end">TIMESTAMP</text>
+  <text class="sub" x="830" y="828" font-size="9.5" text-anchor="middle">운영 대시보드 원천(최근 런 · 게이트 상태)</text>
+
+  <!-- 근거 각주 -->
+  <text class="sub" x="740" y="872" font-size="9.5" text-anchor="middle">근거: docs/CONTRACT.md · extract/offload.py(SNAPSHOT_SCHEMA) · models/sources.yml · models/*/schema.yml · extract/run_log.py · extract/heartbeat.py</text>
+</svg>
