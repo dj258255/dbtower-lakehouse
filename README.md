@@ -1,4 +1,4 @@
-# dbtower-lakehouse — 버려지는 관측 데이터의 장기 분석 파이프라인
+# <img src="docs/icon.svg" width="34" align="top"> dbtower-lakehouse — 버려지는 관측 데이터의 장기 분석 파이프라인
 
 [![CI](https://github.com/dj258255/dbtower-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/dj258255/dbtower-lakehouse/actions/workflows/ci.yml)
 
