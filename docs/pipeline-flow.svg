@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 470" font-family="Apple SD Gothic Neo, NanumGothic, sans-serif">
+  <defs>
+    <filter id="cardshadow" x="-8%" y="-8%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="3.5" flood-color="#1c2430" flood-opacity="0.13"/>
+    </filter>
+    <filter id="colshadow" x="-6%" y="-6%" width="112%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#1c2430" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <style>
+    .hd { fill:#4a4e55; } .hdt { fill:#ffffff; font-size:21px; font-weight:800; }
+    .col { fill:#ffffff; stroke:#e6e8ec; filter:url(#colshadow); }
+    .card { fill:#f8f9fb; stroke:#e6e8ec; filter:url(#cardshadow); }
+    .ct { fill:#2a2e35; font-size:16.5px; font-weight:600; }
+    .cs { fill:#7a8089; font-size:12.5px; }
+    .arrow { stroke:#b0b5bc; stroke-width:6; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+    @media (prefers-color-scheme: dark) {
+      .col { fill:#f4f5f7; } /* 문서 인쇄용 고정 팔레트 */
+    }
+  </style>
+
+  <!-- 1열: 추출·적재 -->
+  <rect class="col" x="20" y="16" width="360" height="438" rx="10"/>
+  <rect class="hd" x="20" y="16" width="360" height="52" rx="10"/>
+  <rect class="hd" x="20" y="44" width="360" height="24"/>
+  <text class="hdt" x="200" y="50" text-anchor="middle">1. 추출 · 적재 (EL)</text>
+  <g>
+    <rect class="card" x="44" y="88" width="312" height="56" rx="10"/>
+    <text class="ct" x="64" y="122">멱등 추출 (파티션 delete+insert)</text>
+    <rect class="card" x="44" y="156" width="312" height="56" rx="10"/>
+    <text class="ct" x="64" y="190">인덱스 선두 준수 · readonly 세션</text>
+    <rect class="card" x="44" y="224" width="312" height="56" rx="10"/>
+    <text class="ct" x="64" y="258">MinIO Parquet (dt= / instance=)</text>
+    <rect class="card" x="44" y="292" width="312" height="56" rx="10"/>
+    <text class="ct" x="64" y="326">자기파괴 가드 (유일본 삭제 거부)</text>
+    <rect class="card" x="44" y="360" width="312" height="56" rx="10"/>
+    <text class="ct" x="64" y="394">connect_timeout 5s · 지수 백오프</text>
+  </g>
+
+  <path class="arrow" d="M396 235 h34 m-12 -11 l14 11 l-14 11"/>
+
+  <!-- 2열: 검증·변환 -->
+  <rect class="col" x="446" y="16" width="360" height="438" rx="10"/>
+  <rect class="hd" x="446" y="16" width="360" height="52" rx="10"/>
+  <rect class="hd" x="446" y="44" width="360" height="24"/>
+  <text class="hdt" x="626" y="50" text-anchor="middle">2. 검증 · 변환 (Gate → dbt)</text>
+  <g>
+    <rect class="card" x="470" y="88" width="312" height="56" rx="10"/>
+    <text class="ct" x="490" y="122">4축 게이트 (정합·완결·신선도·드리프트)</text>
+    <rect class="card" x="470" y="156" width="312" height="56" rx="10"/>
+    <text class="ct" x="490" y="190">FAIL 시 dbt 미실행 (fail-closed)</text>
+    <rect class="card" x="470" y="224" width="312" height="56" rx="10"/>
+    <text class="ct" x="490" y="258">증분 마트 (407.62s → 4s)</text>
+    <rect class="card" x="470" y="292" width="312" height="56" rx="10"/>
+    <text class="ct" x="490" y="326">contracts 타입 강제 · unit test</text>
+    <rect class="card" x="470" y="360" width="312" height="56" rx="10"/>
+    <text class="ct" x="490" y="394">CI 픽스처 e2e (dbt build PASS=26)</text>
+  </g>
+
+  <path class="arrow" d="M822 235 h34 m-12 -11 l14 11 l-14 11"/>
+
+  <!-- 3열: 발행·서빙·감시 -->
+  <rect class="col" x="872" y="16" width="328" height="438" rx="10"/>
+  <rect class="hd" x="872" y="16" width="328" height="52" rx="10"/>
+  <rect class="hd" x="872" y="44" width="328" height="24"/>
+  <text class="hdt" x="1036" y="50" text-anchor="middle">3. 발행 · 서빙 · 감시</text>
+  <g>
+    <rect class="card" x="896" y="88" width="280" height="74" rx="10"/>
+    <text class="ct" x="916" y="118">DuckLake 단일 트랜잭션 발행</text>
+    <text class="cs" x="916" y="142">스냅샷 격리 — 발행 중 질의 41회 무중단</text>
+    <rect class="card" x="896" y="174" width="280" height="92" rx="10"/>
+    <text class="ct" x="916" y="204">Metabase 대시보드 이원화</text>
+    <text class="cs" x="916" y="228">분석(악화 랭킹 등) · 운영(마지막 성공 dt,</text>
+    <text class="cs" x="916" y="248">게이트 축별 상태)</text>
+    <rect class="card" x="896" y="278" width="280" height="92" rx="10"/>
+    <text class="ct" x="916" y="308">침묵 실패 방지</text>
+    <text class="cs" x="916" y="332">실패는 webhook 경보, "성공의 부재"는</text>
+    <text class="cs" x="916" y="352">deadman이 역방향 감시 (30h 침묵 실수신)</text>
+  </g>
+</svg>

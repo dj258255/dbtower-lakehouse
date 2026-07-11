@@ -15,6 +15,13 @@
 
 ![dbtower-lakehouse 파이프라인 — query_snapshot을 Airflow로 추출·적재하고 dbt로 집계해 DuckDB로 질의, 사이에 데이터 품질 게이트](docs/architecture.svg)
 
+### 파이프라인 흐름
+
+단계 관점으로 접으면 셋 — 추출·적재(EL), 검증·변환(Gate → dbt), 발행·서빙·감시.
+각 단에 그 단만의 안전장치(자기파괴 가드, fail-closed 게이트, deadman)가 붙는다.
+
+![파이프라인 흐름 — 추출·적재 → 검증·변환 → 발행·서빙·감시, 각 단의 안전장치](docs/pipeline-flow.svg)
+
 ### 상세 아키텍처
 
 위 그림의 상세판 — 컨테이너 경계·포트(15432/19000/8080/13001), 태스크 체인
