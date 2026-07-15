@@ -1,0 +1,19 @@
+# 빌드 컨텍스트·이미지 COPY에서 제외 — standalone 이미지 위생.
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.idea
+logs
+# dbt 로컬 산출물(이미지에 굽지 않음 — 런타임에 재생성)
+dbt/**/target
+dbt/**/dbt_packages
+dbt/**/logs
+dbt/**/*.duckdb
+dbt/**/.user.yml
+# 문서·이미지·CI 임시물
+docs/images
+.ci_tmp
+.env

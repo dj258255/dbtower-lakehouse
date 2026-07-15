@@ -29,3 +29,10 @@ RUN python -m venv /opt/dbt-venv \
         duckdb==1.5.4 \
     && chown -R airflow:0 /opt/dbt-venv
 USER airflow
+
+# 3) 코드를 이미지에 굽는다 — standalone 어플라이언스(ROADMAP 11단계)의 재현성.
+#    dev용 docker-compose.yml 은 여전히 ./dags 등을 bind-mount로 덮으므로 개발 경로는 불변.
+#    standalone 은 bind-mount가 없어 이 baked 코드를 쓴다. pip 레이어 뒤라 캐시 보존.
+COPY --chown=airflow:0 dags/ /opt/airflow/dags/
+COPY --chown=airflow:0 extract/ /opt/airflow/extract/
+COPY --chown=airflow:0 dbt/ /opt/airflow/dbt/

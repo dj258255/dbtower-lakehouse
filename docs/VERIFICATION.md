@@ -852,7 +852,65 @@ heartbeat(성공의 부재)에 더한 세 번째 축(지금 상태의 화면). a
 - **합성 데이터 정리 완료**: scale/ 2,196오브젝트 삭제 · ducklake_scale drop · 실데이터
   raw 508,155행/3dt·서빙 마트(fct 1,749·mart 롤링) 원상. Metabase 서빙 카드 10–60ms.
 
-## 12. 잔여 (정직)
+## 12. 11단계 — 셀프호스트 어플라이언스 (standalone e2e, 2026-07-15)
+
+로드맵 11단계. "데모 위성에서 남이 띄우는 애드온으로." 돌고 있는 dev 스택과 격리(별도
+프로젝트명·포트)로 `docker-compose.standalone.yml`을 실제로 빌드·기동해 실측했다.
+
+### 12-1. 결합 분리 — external 네트워크 0 (config 검증)
+
+```
+$ docker compose -f docker-compose.standalone.yml --env-file <test> config | grep -c 'external: true'
+0
+서비스: minio · minio-init · catalog-postgres · airflow-postgres · airflow(init/scheduler/webserver) · metabase
+네트워크: name: lakehouse-standalone   (external 아님)
+```
+
+dev용 `docker-compose.yml`의 `networks.default: dbtower_default(external:true)` 전제가 제거됐다.
+`extract/config.py`의 `DUCKLAKE_CATALOG_*` 폴백(하위호환 분리)이 그대로 채워져, 원천=샘플/외부
+DBTower, 카탈로그=번들 PG로 갈렸다.
+
+### 12-2. `--profile demo up` — DBTower 없이 전체 e2e (실측)
+
+7개 컨테이너 전부 healthy. 버킷 `lakehouse` 자동 생성, 샘플 원천 시드
+`database_instance=2 · query_snapshot=10`.
+
+```
+offload 2026-01-01 → {"instances":{"1":4,"2":2},"total_rows":6}
+offload 2026-01-02 → total_rows 4
+번들 MinIO(DuckDB httpfs count): 10행 · 2dt · 2instance
+```
+
+전체 파이프라인(DAG 경로 그대로):
+
+```
+게이트: reconciliation OK · completeness OK · freshness OK · schema_drift OK  → GATE PASS
+dbt run:  PASS=3  (stg_query_snapshot · fct_query_daily · mart_query_regression)
+dbt test: PASS=18 (데이터 테스트 --select test_type:data)
+```
+
+즉 `offload → 게이트 → dbt run → dbt test`가 **내 DBTower 데모 스택 없이** 번들 MinIO·PG만으로 완주했다.
+
+### 12-3. 시크릿 위생 · Metabase 앱 DB PG화
+
+- compose의 시크릿은 전부 `${VAR:?}` 필수화(FERNET·WEBSERVER_SECRET·카탈로그·MinIO·Airflow 메타·admin).
+  평문은 데모 원천 throwaway(`dbtower1234`)뿐 — `--profile demo`에서만 뜨는 샘플 DB.
+- Metabase 앱 DB를 H2 대신 번들 PG(`metabase_app`)로: 기동 후 **151 테이블 영속**, `core_user` 존재.
+  카탈로그 PG 한 인스턴스에 `ducklake_catalog`(앱 멱등 생성) + `metabase_app`(init SQL)을 흡수해
+  서비스 추가 0.
+
+### 12-4. 격리 — dev 스택 무영향
+
+standalone은 별도 네트워크(`lakehouse-standalone`)·별도 컨테이너명(`lh-standalone-*`)·오버라이드
+포트로 떠서, 5일째 돌고 있는 dev 스택(`lakehouse-*`·`dbtower-*`)을 건드리지 않았다. `down -v` 후
+`lh-standalone-*` 잔존 0, dev 스택 그대로.
+
+**정직한 잔여**: (a) 코드를 이미지에 구웠지만(`Dockerfile` COPY) 다중 아키텍처 빌드·이미지 게시
+파이프라인은 아직. (b) TLS/리버스 프록시는 "인터넷에 열 때만"의 선택 계층이라 미구현(사내망은
+프록시까지 불요). (c) 카탈로그 PG 자기 백업 절차는 RUNBOOK 확장 대상. (d) 데모 원천은 파일 규모가
+아니라 로직 대표 경로(ci_fixture 10행)만 담는다.
+
+## 13. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 실측 시점 기준 07-08이 열린 창이다.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을

@@ -1,0 +1,222 @@
+# 셀프호스트 어플라이언스 (ROADMAP 11단계) — 남이 자기 인프라에 통째로 띄우는 배포.
+#
+# dev용 docker-compose.yml 과의 차이(그건 내 데모 스택에 얹히는 위성):
+# - external 네트워크(dbtower_default) 전제를 제거하고 자체 network를 쓴다.
+# - 원천(MinIO·카탈로그 PG)을 재사용하지 않고 **직접 번들**한다.
+# - 유일한 외부 의존은 "사용자의 DBTower 메타 PG"뿐 — SRC_PG_* 로 주입한다.
+# - 시크릿을 하드코딩하지 않는다. 전부 .env(${VAR:?} 필수화) — 데모 평문 없음.
+# - 코드는 bind-mount 하지 않고 이미지에 굽는다(재현성). Dockerfile 의 COPY 참조.
+# - Metabase 앱 DB를 H2 대신 번들 PG로(프로덕션 위생).
+#
+# 사용:
+#   cp .env.standalone.example .env  &&  (시크릿 채우고)  docker compose -f docker-compose.standalone.yml up -d
+# 데모(내 DBTower 없이 전체 e2e 체험):
+#   docker compose -f docker-compose.standalone.yml --profile demo up -d
+#   → SRC_PG_HOST 미지정 시 기본값이 sample-source-postgres 라 바로 붙는다.
+#
+# 포트는 전부 env 오버라이드(기본은 표준 포트) — 다른 스택과 병행 기동 시 충돌 회피.
+
+x-airflow-common: &airflow-common
+  build: .
+  image: lakehouse-airflow:latest
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_META_PASSWORD:?set in .env}@airflow-postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    # backfill 폭주 방지 — 병렬·활성 런 상한. 몇백 대 규모면 PARALLELISM을 올린다(12단계 노브).
+    AIRFLOW__CORE__PARALLELISM: ${AIRFLOW_PARALLELISM:-4}
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    # 시크릿 — 반드시 새로 생성(.env.standalone.example의 생성 명령 참조). 기본값 없음.
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?set AIRFLOW_WEBSERVER_SECRET_KEY in .env}
+    # 원천 = 사용자의 DBTower 메타 PG. 미지정 시 데모 샘플 원천으로 폴백(--profile demo).
+    SRC_PG_HOST: ${SRC_PG_HOST:-sample-source-postgres}
+    SRC_PG_PORT: ${SRC_PG_PORT:-5432}
+    SRC_PG_DB: ${SRC_PG_DB:-dbtower}
+    SRC_PG_USER: ${SRC_PG_USER:-postgres}
+    SRC_PG_PASSWORD: ${SRC_PG_PASSWORD:-dbtower1234}
+    # DuckLake 카탈로그 = 번들 PG(원천과 분리). config.py의 DUCKLAKE_CATALOG_* 폴백을 채운다.
+    DUCKLAKE_CATALOG_HOST: catalog-postgres
+    DUCKLAKE_CATALOG_PORT: "5432"
+    DUCKLAKE_CATALOG_DB: ducklake_catalog
+    DUCKLAKE_CATALOG_USER: catalog
+    DUCKLAKE_CATALOG_PASSWORD: ${CATALOG_PASSWORD:?set in .env}
+    DUCKLAKE_DATA_PATH: s3://lakehouse/ducklake/
+    # 싱크 = 번들 MinIO.
+    S3_ENDPOINT: http://minio:9000
+    S3_ENDPOINT_HOSTPORT: minio:9000
+    S3_ACCESS_KEY: ${MINIO_ROOT_USER:?set in .env}
+    S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+    S3_BUCKET: lakehouse
+    ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    DUCKLAKE_RETENTION: ${DUCKLAKE_RETENTION:-7 days}
+  # 코드는 이미지에 구움(bind-mount 없음). 로그만 볼륨 영속.
+  volumes:
+    - airflow-logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-postgres:
+      condition: service_healthy
+    catalog-postgres:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  # --- 싱크: 번들 MinIO(S3 호환) ---
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: lh-standalone-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # 버킷 생성 후 종료(1회성).
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    container_name: lh-standalone-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/lakehouse &&
+      echo 'bucket lakehouse ready'
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    restart: "no"
+
+  # --- 카탈로그 PG: DuckLake 카탈로그 + Metabase 앱 DB를 한 인스턴스에(서비스 추가 0) ---
+  catalog-postgres:
+    image: postgres:16
+    container_name: lh-standalone-catalog-postgres
+    environment:
+      POSTGRES_USER: catalog
+      POSTGRES_PASSWORD: ${CATALOG_PASSWORD:?set in .env}
+      POSTGRES_DB: catalog
+    volumes:
+      - catalog-db:/var/lib/postgresql/data
+      # ducklake_catalog + metabase_app 두 DB를 첫 부팅에 생성.
+      - ./standalone/catalog-init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "catalog"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Airflow 메타 PG(오케스트레이션 상태) — DuckLake 카탈로그와 물리 분리 ---
+  airflow-postgres:
+    image: postgres:16
+    container_name: lh-standalone-airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_META_PASSWORD:?set in .env}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: lh-standalone-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER:?set in .env}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:?set in .env}" \
+          --firstname admin --lastname user --role Admin \
+          --email "${AIRFLOW_ADMIN_EMAIL:-admin@lakehouse.local}" || true
+    restart: "no"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: lh-standalone-airflow-scheduler
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: lh-standalone-airflow-webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # --- 대시보드: Metabase(앱 DB를 번들 PG로 — 프로덕션 위생) ---
+  metabase:
+    build: ./metabase
+    image: lakehouse-metabase:latest
+    container_name: lh-standalone-metabase
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase_app
+      MB_DB_HOST: catalog-postgres
+      MB_DB_PORT: "5432"
+      MB_DB_USER: catalog
+      MB_DB_PASS: ${CATALOG_PASSWORD:?set in .env}
+      JAVA_TIMEZONE: UTC
+    ports:
+      - "${METABASE_PORT:-3000}:3000"
+    depends_on:
+      catalog-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- (demo 프로필) 샘플 원천 PG — 내 DBTower 없이도 전체 e2e를 돌린다 ---
+  # query_snapshot + database_instance 를 CONTRACT §1 스키마로 시드.
+  sample-source-postgres:
+    image: postgres:16
+    container_name: lh-standalone-sample-source
+    profiles: ["demo"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dbtower1234
+      POSTGRES_DB: dbtower
+    volumes:
+      - ./standalone/demo-source-seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  airflow-db:
+  airflow-logs:
+  catalog-db:
+  minio-data:
+
+# external 없음 — 자체 네트워크. 어플라이언스는 독립 기동한다.
+networks:
+  default:
+    name: lakehouse-standalone

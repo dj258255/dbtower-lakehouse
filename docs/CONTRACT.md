@@ -8,7 +8,17 @@
 
 - **위치**: DBTower 메타 PostgreSQL (`dbtower-postgres`, 호스트 포트 15432, DB `dbtower`).
   이건 **관측 전용 메타 DB**다. 운영 대상 DB(mysql/oracle/…)는 절대 건드리지 않는다.
-- **테이블**: `query_snapshot`
+- **테이블 (두 개 — 둘 다 read-only 권한 필요)**:
+  | 테이블 | 역할 | 읽는 것 |
+  |---|---|---|
+  | `query_snapshot` | 팩트(쿼리 성능 스냅샷 원본) | 전체 컬럼(아래 스키마) |
+  | `database_instance` | 레지스트리(어느 인스턴스를 훑을지 = 루프 드라이버) | `id` (`offload.py::_list_instance_ids`) + 품질 게이트 completeness의 기대 인스턴스 집합 |
+
+  > **왜 두 개인가**: `query_snapshot`을 `captured_at`만으로 훑으면 인덱스
+  > `idx_snapshot_instance_time(instance_id, captured_at)`의 선두 컬럼을 못 탄다(가드레일 1 —
+  > 원천 무부하). 그래서 `database_instance`에서 인스턴스 목록을 먼저 얻어 **인스턴스별
+  > 등치 질의**를 돈다. `database_instance`에 SELECT 권한이 없거나 비어 있으면 인스턴스 0개로
+  > 판정돼 **아무것도 안 뽑고 조용히 빈 결과**가 난다(셀프호스트 install 시 최다 함정).
 - **접근**: 읽기 전용 세션(`SET TRANSACTION READ ONLY`) + instance별 시간창 질의 + 서버커서 배치.
 
 ### 원천 스키마
@@ -138,3 +148,6 @@ raw가 반쪽만 적재된 채 dbt 마트가 만들어지면 랭킹이 조용히
 - 알림 심각도 라우팅·중복 억제: 채널 하나에 best-effort POST까지.
 - ACID·타임트래블: 5단계(DuckLake)에서 제공. raw 레이어 자체는 여전히
   "lake"(파티션 덮어쓰기)이고, 그 위에 테이블 포맷을 얹은 것이 house다.
+- 크기 스냅샷(`size_snapshot` — 테이블/디스크 크기 시계열): **아직 계약에 없다.**
+  용량 예측(ROADMAP 13단계)이 요구하는 세 번째 원천으로 계획만 있고, DBTower 쪽
+  공급(tableStats 주기 저장)과 함께 착수 시 이 문서에 정식 편입한다.

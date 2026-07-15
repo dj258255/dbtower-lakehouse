@@ -46,17 +46,24 @@ class SinkConfig:
 class DuckLakeConfig:
     """DuckLake 테이블 포맷 설정(Phase 5).
 
-    카탈로그는 PostgreSQL, 데이터 파일은 MinIO(S3)에 둔다. 카탈로그 DB는
-    DBTower 메타 DB(dbtower)와 **분리된 별도 DB**(ducklake_catalog)를 쓴다 —
-    같은 PG 인스턴스를 재사용하되 관측 데이터를 오염시키지 않는다.
+    카탈로그는 PostgreSQL, 데이터 파일은 MinIO(S3)에 둔다.
+
+    카탈로그 PG의 위치는 두 배치 모드에 따라 갈린다:
+    - 데모 스택(개발): 원천(DBTower 메타 PG)과 **같은 인스턴스**를 재사용하되 DB만
+      분리(`ducklake_catalog`). 관측 데이터를 오염시키지 않는다.
+    - 어플라이언스(11단계, standalone): 원천 = 남의 **외부** DBTower PG, 카탈로그 =
+      우리가 **번들한** PG로 갈라진다. 이때는 `DUCKLAKE_CATALOG_*`로 카탈로그를 독립
+      주입한다. 미지정 시 `SRC_PG_*`로 폴백하므로 데모 스택은 기존 동작 그대로다.
     """
 
-    # 카탈로그 PG 접속 — SourceConfig와 같은 인스턴스, DB만 다르다.
-    catalog_host: str = os.getenv("SRC_PG_HOST", "localhost")
-    catalog_port: int = int(os.getenv("SRC_PG_PORT", "15432"))
+    # 카탈로그 PG 접속. DUCKLAKE_CATALOG_* 가 있으면 원천과 독립, 없으면 SRC_PG_* 폴백.
+    catalog_host: str = os.getenv("DUCKLAKE_CATALOG_HOST", os.getenv("SRC_PG_HOST", "localhost"))
+    catalog_port: int = int(os.getenv("DUCKLAKE_CATALOG_PORT", os.getenv("SRC_PG_PORT", "15432")))
     catalog_db: str = os.getenv("DUCKLAKE_CATALOG_DB", "ducklake_catalog")
-    catalog_user: str = os.getenv("SRC_PG_USER", "postgres")
-    catalog_password: str = os.getenv("SRC_PG_PASSWORD", "dbtower1234")
+    catalog_user: str = os.getenv("DUCKLAKE_CATALOG_USER", os.getenv("SRC_PG_USER", "postgres"))
+    catalog_password: str = os.getenv(
+        "DUCKLAKE_CATALOG_PASSWORD", os.getenv("SRC_PG_PASSWORD", "dbtower1234")
+    )
 
     # 데이터 파일이 사는 곳(S3). 카탈로그는 메타데이터만, 실제 컬럼나 파일은 여기.
     data_path: str = os.getenv("DUCKLAKE_DATA_PATH", "s3://lakehouse/ducklake/")

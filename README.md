@@ -127,6 +127,48 @@ DuckLake에 발행해 **운영 대시보드**(마지막 성공 dt·오늘 게이
 | 대시보드 | **Metabase** (+ MotherDuck DuckDB 드라이버) | 셀프서비스 BI 표준. DuckDB/DuckLake 커넥터가 있어 서빙 DB 추가 0. 대시보드·필터를 API로 재현 가능(scripts/metabase_bootstrap.py) |
 | 언어 | **Python 3.12** | DAG·추출 스크립트 |
 
+## 셀프호스트로 띄우기 (어플라이언스)
+
+이 파이프라인은 **DBTower를 셀프호스트하는 사람이 옆에 같이 띄우는 애드온**이다 —
+DBTower가 Prometheus면 이건 Thanos다(7일 뒤 사라질 쿼리 스냅샷을 장기 보관·분석).
+개발용 `docker-compose.yml`은 내 데모 스택에 얹히지만, `docker-compose.standalone.yml`은
+자체 MinIO·카탈로그 PG·Metabase를 번들해 **당신 DBTower 하나만 가리키면** 독립 기동한다.
+
+### 데모 (내 DBTower 없이 전체 파이프라인 체험)
+
+```bash
+cp .env.standalone.example .env
+# 시크릿만 채운다(생성 명령은 .env 주석에). 원천은 비워두면 샘플로 폴백.
+docker compose -f docker-compose.standalone.yml --profile demo up -d
+```
+
+샘플 원천 PG가 함께 떠서 DBTower 없이도 `offload → 게이트 → dbt → 발행`이 그대로 돈다.
+
+### 프로덕션 (내 DBTower 메타 PG에 연결)
+
+원천 계약은 **두 테이블**이다([docs/CONTRACT.md](docs/CONTRACT.md) §1) — `query_snapshot`(팩트)와
+`database_instance`(레지스트리·루프 드라이버). DBTower 메타 PG에 읽기 전용 계정을 만든다:
+
+```sql
+CREATE ROLE lakehouse_reader LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE dbtower TO lakehouse_reader;
+GRANT USAGE ON SCHEMA public TO lakehouse_reader;
+GRANT SELECT ON query_snapshot, database_instance TO lakehouse_reader;
+```
+
+> ⚠️ `database_instance` 권한을 빠뜨리면 인스턴스 0개로 판정돼 **조용히 빈 결과**가 난다
+> (셀프호스트 최다 함정). 두 테이블 모두 필요하다.
+
+`.env`의 원천 절(`SRC_PG_*`)을 이 계정으로 채우고 `--profile demo` 없이 기동한다:
+
+```bash
+docker compose -f docker-compose.standalone.yml up -d
+```
+
+규모(수백~수천 대)면 `.env`의 노브(`AIRFLOW_PARALLELISM`·`DUCKLAKE_RETENTION`)를 올린다
+([docs/ROADMAP.md](docs/ROADMAP.md) 12단계). 라이선스는 [LICENSE](LICENSE)(Apache-2.0),
+번들 컴포넌트 고지는 [NOTICE](NOTICE).
+
 ## 원칙 (DBTower에서 계승)
 
 1. **정직한 필요에서 시작한다** — 도구부터 나열하지 않는다. 모든 단계는 "왜 필요한가"가 먼저다.
@@ -142,6 +184,7 @@ DuckLake에 발행해 **운영 대시보드**(마지막 성공 dt·오늘 게이
 
 ## 로드맵
 
-[docs/ROADMAP.md](docs/ROADMAP.md) — 0~9단계 상세(구현 방법·함정·검증 기준·산출물)와
-감사 백로그(완료·다음에 할 것·안 하기로 한 것과 그 이유).
+[docs/ROADMAP.md](docs/ROADMAP.md) — 완료된 0~10단계 상세(구현 방법·함정·검증 기준·산출물),
+다음 아크 11~13단계(셀프호스트 어플라이언스화·인스턴스 수 축 규모 분석·용량 예측 — 미착수·계획),
+감사 백로그(완료·다음에 할 것·안 하기로 한 것과 그 이유), dbtower 패밀리 프로젝트 경계.
 운영 절차(장애 대응·backfill·유지보수·대시보드)는 [docs/RUNBOOK.md](docs/RUNBOOK.md).
