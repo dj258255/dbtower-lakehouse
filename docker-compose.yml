@@ -10,7 +10,7 @@
 #   external로 붙어 재사용한다(중복 스택 금지).
 #
 # 사용: cp .env.example .env  &&  docker compose up -d
-# UI: http://localhost:8080 (airflow / airflow)
+# UI: http://localhost:8082 (airflow / airflow) - 8080은 DBTower 웹 콘솔이 쓴다(포트 충돌 이력)
 
 x-airflow-common: &airflow-common
   # Phase 6: 커스텀 이미지(Dockerfile) — 추출 의존성 + 분리 venv의 dbt를 굽는다.
@@ -96,7 +96,7 @@ services:
     container_name: lakehouse-airflow-webserver
     command: webserver
     ports:
-      - "8080:8080"
+      - "8082:8080"
     restart: unless-stopped
     depends_on:
       airflow-postgres:
