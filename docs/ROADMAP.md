@@ -879,6 +879,57 @@ GB/일은 가장 예측 가능한 메트릭이라 선형+계절 보정으로 충
 
 ---
 
+## 14단계 — 두 저장소가 손잡기: offload 확대 + 장기 베이스라인 되쓰기 (미착수 — 착수 명세, 2026-07-17)
+
+**상황 가정**: DBTower의 이상 감지 베이스라인은 7일 창(요일x시간대)이다. 월요일 아침 배치 피크가
+매주 반복되는 인스턴스에서, 4주 전 같은 요일과 비교하면 평범한 부하를 "평소와 다름"으로 오탐한다.
+그리고 offload는 여전히 `query_snapshot` 하나뿐 — wait event·백업 이력·플랜 변경의 장기 추세는
+7일 뒤 사라진다(이 프로젝트가 존재하는 이유였던 그 구멍이 세 테이블에 아직 남아 있다).
+
+**한계·전제 (2026-07-16 DBTower 쪽 실분석 — 원문은 DBTower ROADMAP Phase 5 표, 지어낸 것 없음)**:
+"코드 변경 0으로 추출만 늘리면 된다"는 전제가 실분석에서 셋 다 깨졌다.
+
+- **선결 1 — wait event는 원천에 영속 테이블이 없다**: DBTower 메타 DB에 wait event 주기 영속이
+  없어 추출할 것 자체가 없다. `wait_event_snapshot(instance_id, captured_at, event_name, category,
+  value)` 신설이 먼저다(13단계 size_snapshot과 동일 패턴 — **DBTower 쪽 작업**).
+- **선결 2 — plan_snapshot 보존이 카운트 기반**(쿼리당 최신 20개, 1시간 스윕): "어제 하루창 추출"
+  전제와 어긋나 하루가 닫히기 전에 행이 지워질 수 있다 → 시간 기반 보존 병행 또는 추출 주기
+  단축의 정합 문서화(**DBTower 쪽 작업**).
+- **선결 3 — backup_run은 사후 변이 테이블**(verify/remote가 나중에 UPDATE): "닫힌 dt는 불변"
+  전제가 깨진다 → D+1 스냅샷임을 계약에 명시, 워터마크 컬럼은 started_at.
+
+**판단**: forward(내리기)와 reverse(되쓰기)는 방향이 다른 두 일이다. forward는 기존 파이프라인의
+일반화(단수 상수 → 레지스트리), reverse는 **원천 readonly 봉인을 깨지 않는 별도 쓰기 경로**의
+신설이다 — 섞으면 "분석계가 운영계를 오염시키지 않는다"는 이 프로젝트의 안전 논거가 무너진다.
+되쓰기는 "기계가 소비해 액션을 구동할 때만 정당" 원칙의 두 번째 사례다(첫째는 13단계 용량 발화).
+
+### 착수 명세 (Opus) — 14단계
+
+> 선결(D1·D2)과 수신(D8)은 DBTower 저장소 작업, 나머지는 이 저장소. 기존 자산(offload 멱등·게이트·
+> 증분 워터마크·publish 원자성) 최대 재사용.
+
+| # | 조각 | 어디 집 | 구현 명세 | 검증 기준 |
+|---|---|---|---|---|
+| D1 | wait_event 주기 영속 | DBTower | `wait_event_snapshot` 테이블 + 수집 잡 + 보존(7일, 기존 retention 패턴). 이게 없으면 D3의 wait event 추출은 공급원이 없다 | 주기 적재 실측, 보존 정리 동작 |
+| D2 | plan_snapshot 보존 정합 | DBTower | 시간 기반 보존 병행(최소 48h 보장) 또는 "카운트 보존 + 추출 주기 단축" 계약 문서화 중 택1 — 하루창이 닫히기 전 유실 없음을 보장 | 경계 케이스(20개 초과 갱신 쿼리)에서 어제 행 생존 |
+| D3 | offload 레지스트리화 | lakehouse | `SOURCE_TABLE` 단수 상수 → 테이블 스펙 레지스트리(테이블명·워터마크 컬럼·불변성 종류·파티션 규약). backup_run(D+1·started_at 워터마크)·plan_snapshot·wait_event_snapshot 편입. CONTRACT §1 개정 + GRANT 목록 추가 — 약 10개 파일 동심원 | 테이블별 멱등 2회 행수 불변 |
+| D4 | 게이트 프로필 | lakehouse | 게이트 4축(정합·완결·신선도·볼륨)을 테이블별 프로필로 — backup_run은 저빈도·사후 변이라 completeness·freshness를 query_snapshot 기준으로 재면 **정상 상태가 fail-closed 오탐** | backup_run 무변경 날 게이트 PASS |
+| D5 | fct_query_hourly | lakehouse | 일간 마트로는 dow×hour 통계가 불가 — staging에서 시간대별 델타 fct 신설(증분 delete+insert·dt 워터마크 리터럴 패턴 복제) | unit: 시간 경계 델타 정확 |
+| D6 | 장기 베이스라인 mart | lakehouse | `mart_baseline_longterm(instance_id, query_id, dow, hour, mean, stddev, observations, computed_at)` — min_observations 필터(DBTower BaselineService 8관측 게이트와 정렬) + top-K 볼륨 가드(instance×query×168버킷 폭발 방지) | 합성 계절 데이터로 dow×hour 통계 기지값 일치 |
+| D7 | 되쓰기(writeback) | lakehouse | 별도 역할 `lakehouse_writer`(해당 테이블만 INSERT/DELETE) + 별도 WritebackConfig(**SourceConfig 재사용 금지** — 원천 접속은 계약·코드 양쪽 readonly 봉인 유지). 스케줄은 publish~heartbeat 사이 writeback 태스크(단일 트랜잭션 DELETE+INSERT, publish의 원자성·행수 대조 이식) 또는 @weekly 별도 DAG(deadman 편입 조건). CONTRACT에 되쓰기 절 신설 | 원천 계정으로 쓰기 시도 → 거부, writer로 왕복 행수 대조 |
+| D8 | 수신·병합 | DBTower | Flyway로 `baseline_longterm` 정의 + BaselineService 가중 병합(관측 충분 시 결합, 미존재/빈 테이블이면 현행 그대로 — 회귀 0) | 장기 테이블 주입 후 월요일 피크를 오탐하지 않음 실측, 미존재 시 현행 동작 회귀 없음 |
+
+**함정(선검증)**: (a) 되쓰기 DELETE+INSERT가 DBTower의 이상 감지 폴러와 경합하면 빈 테이블을
+읽는 순간이 생긴다 — 단일 트랜잭션이면 PG MVCC가 막아주지만, "트랜잭션 하나"가 계약임을 테스트로
+고정할 것. (b) dow×hour의 타임존 — 원천이 UTC 고정이므로 mart도 UTC로 계산하고 표시만 로컬
+(DBTower Slow 로컬 시간 표시와 같은 결). (c) top-K에서 잘린 쿼리의 베이스라인 부재는 "장기 없음 →
+현행 7일 창 폴백"이지 오류가 아니다(BaselineService 병합 규칙에 명시).
+
+**검증 기준(실측 TODO)**: DAG e2e(테이블별 게이트 프로필 통과) + plan_snapshot 보존 정합 실측 +
+계절성 오탐 시나리오(합성 월요일 피크 4주 주입 → 5주차 월요일 무경보) + 되쓰기 왕복.
+
+---
+
 ## dbtower 패밀리 — 무엇이 어디 집인가 (프로젝트 경계, 2026-07-15)
 
 > "새 기능을 dbtower에 붙일까, lakehouse에 붙일까, 아니면 새 레포(`dbtower-????`)를 팔까"의
