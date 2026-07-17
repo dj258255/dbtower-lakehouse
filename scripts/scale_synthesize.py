@@ -18,6 +18,18 @@
 
     python -m scripts.scale_synthesize generate --days 365
     python -m scripts.scale_synthesize cleanup
+
+**N축 모드(Phase 12)** — 10단계가 시간축(dt)만 늘렸다면, 이 모드는 **인스턴스축(N)**을
+늘린다. 설계 핵심은 *총량 고정, 축만 회전*: 10단계가 365dt×6inst=2,190파일·54.5M행이었으니
+N축은 7dt×300inst=2,100파일·~52M행으로 맞춘다 — 총량이 같으면 측정 차이가 전부
+"축의 모양"(per-dt 파일 수 6→300)으로 귀속된다. 리매핑은 닫힌 dt의 실제 인스턴스를
+순환 복제하되 instance_id를 1..N으로 갈아끼우고, query_id에 `~i{j}` suffix를 붙여
+고유쿼리 카디널리티도 N에 비례해 자연 증가시킨다(id는 j*1e9 오프셋으로 충돌 방지).
+격리 프리픽스는 `scale_n/`(dt축의 `scale/`과도 분리). 악화 주입은 하지 않는다 —
+N축 측정 대상은 랭킹이 아니라 파이프라인 역학이다.
+
+    python -m scripts.scale_synthesize generate --instances 300 --days 7
+    python -m scripts.scale_synthesize cleanup   # scale/ 와 scale_n/ 둘 다 정리
 """
 from __future__ import annotations
 
@@ -34,6 +46,8 @@ from extract.config import RAW_PREFIX, SinkConfig
 
 # 합성 데이터 격리 프리픽스 — 실데이터 raw/ 와 물리적으로 분리.
 SCALE_PREFIX = "scale/query_snapshot"
+# N축(인스턴스 수) 합성 프리픽스 — dt축(scale/)과도 분리(Phase 12).
+SCALE_N_PREFIX = "scale_n/query_snapshot"
 # 복제 원본 = 닫힌 dt(불변 149,259행). 원천 PG를 다시 읽지 않는다.
 SOURCE_DT = "2026-07-05"
 # 롤링 윈도우 신호를 심을 "최근" 구간 길이(일).
@@ -138,17 +152,75 @@ def generate(days: int) -> None:
     print(f"[격리] 실데이터 raw/ 는 무손상. 프리픽스 = s3://{sink.bucket}/{SCALE_PREFIX}/")
 
 
+def _remap_instance(t: pa.Table, new_iid: int) -> pa.Table:
+    """base 인스턴스 테이블을 합성 인스턴스 new_iid의 것으로 리매핑한 사본.
+
+    - instance_id → new_iid (상수 컬럼 교체)
+    - query_id    → 원본 + '~i{new_iid}' suffix — 인스턴스마다 자기 쿼리 모집단을
+      갖는 실제 배포처럼, 고유쿼리 카디널리티가 N에 비례해 자연 증가한다.
+    - id          → 원본 + new_iid*1e9 오프셋(전역 유일 유지)
+    """
+    n = t.num_rows
+    ids = pa.array([v + new_iid * 1_000_000_000 for v in t.column("id").to_pylist()],
+                   type=pa.int64())
+    iids = pa.array([new_iid] * n, type=pa.int64())
+    qids = pa.array([f"{q}~i{new_iid}" for q in t.column("query_id").to_pylist()],
+                    type=pa.string())
+    out = t.set_column(t.schema.get_field_index("id"), "id", ids)
+    out = out.set_column(out.schema.get_field_index("instance_id"), "instance_id", iids)
+    return out.set_column(out.schema.get_field_index("query_id"), "query_id", qids)
+
+
+def generate_n(instances: int, days: int) -> None:
+    """N축 합성(Phase 12) — 총량 고정·축 회전. scale_n/ 프리픽스에만 쓴다."""
+    sink = SinkConfig()
+    s3 = _s3(sink)
+    print(f"[N축 생성] 원본 dt={SOURCE_DT} 읽는 중(원천 PG 무접속)...")
+    base = _duck_read_source(sink)
+    base_ids = sorted(base)
+    base_rows = sum(t.num_rows for t in base.values())
+    print(f"[N축 생성] base 인스턴스 {base_ids}(행 {base_rows:,}) → 합성 N={instances}")
+
+    # 합성 인스턴스별 parquet 바이트를 미리 직렬화 — base를 순환 복제 + 리매핑.
+    synth_bytes: dict[int, bytes] = {}
+    per_dt_rows = 0
+    for j in range(1, instances + 1):
+        src = base[base_ids[(j - 1) % len(base_ids)]]
+        remapped = _remap_instance(src, j)
+        synth_bytes[j] = _serialize(remapped)
+        per_dt_rows += remapped.num_rows
+        if j % 100 == 0 or j == instances:
+            print(f"[N축 생성] 직렬화 {j}/{instances}", flush=True)
+    per_dt_bytes = sum(len(b) for b in synth_bytes.values())
+
+    dts = [END_DT - timedelta(days=days - 1 - k) for k in range(days)]
+    put = 0
+    for k, dt in enumerate(dts):
+        for j in range(1, instances + 1):
+            key = f"{SCALE_N_PREFIX}/dt={dt.isoformat()}/instance_id={j}/part-000.parquet"
+            s3.put_object(Bucket=sink.bucket, Key=key, Body=synth_bytes[j])
+            put += 1
+        print(f"[N축 생성] dt {k + 1}/{days} (누적 {put} 오브젝트)", flush=True)
+
+    print(f"[완료] {days}dt × {instances}인스턴스 = {put} 오브젝트, "
+          f"총 {per_dt_rows * days:,}행 · 약 {per_dt_bytes * days / 1e6:.1f}MB")
+    print(f"[격리] 실데이터 raw/·dt축 scale/ 무손상. 프리픽스 = "
+          f"s3://{sink.bucket}/{SCALE_N_PREFIX}/")
+
+
 def cleanup() -> None:
     sink = SinkConfig()
     s3 = _s3(sink)
     paginator = s3.get_paginator("list_objects_v2")
-    removed = 0
-    for page in paginator.paginate(Bucket=sink.bucket, Prefix=f"{SCALE_PREFIX}/"):
-        objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-        if objs:
-            s3.delete_objects(Bucket=sink.bucket, Delete={"Objects": objs})
-            removed += len(objs)
-    print(f"[정리] scale/ 프리픽스 오브젝트 {removed}개 삭제 — 실데이터 raw/ 는 불변")
+    for label, prefix in (("scale/", SCALE_PREFIX), ("scale_n/", SCALE_N_PREFIX)):
+        removed = 0
+        for page in paginator.paginate(Bucket=sink.bucket, Prefix=f"{prefix}/"):
+            objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objs:
+                s3.delete_objects(Bucket=sink.bucket, Delete={"Objects": objs})
+                removed += len(objs)
+        print(f"[정리] {label} 프리픽스 오브젝트 {removed}개 삭제")
+    print("[정리] 실데이터 raw/ 는 불변")
 
 
 def main() -> int:
@@ -156,10 +228,15 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("generate")
     g.add_argument("--days", type=int, default=365)
+    g.add_argument("--instances", type=int, default=None,
+                   help="N축 모드(Phase 12): 인스턴스 N개로 리매핑 복제 → scale_n/")
     sub.add_parser("cleanup")
     args = ap.parse_args()
     if args.cmd == "generate":
-        generate(args.days)
+        if args.instances:
+            generate_n(args.instances, args.days)
+        else:
+            generate(args.days)
     elif args.cmd == "cleanup":
         cleanup()
     return 0
