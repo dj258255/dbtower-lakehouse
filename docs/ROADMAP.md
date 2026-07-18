@@ -1005,6 +1005,31 @@ Metabot이 못 하는 그림. 경계 원칙 유지: **lakehouse는 자체 AI/MCP
 > mart_capacity_forecast 질의 6행, DELETE 400 거부, **카드 76 생성·bar 차트 실화면**. N4(Metabase
 > 60 공식 MCP)는 드라이버 대기 그대로.
 
+---
+
+## 16단계 — 미사용 인덱스 장기 판정: "지워도 되나"는 분기가 답한다 (미착수 — 착수 명세, 2026-07-18)
+
+"이 인덱스 지워도 되나"는 7일 관측으론 답할 수 없다. 재시작-누적 카운터의 순간 관측은
+"지난주 재기동 이후 0회"와 "분기 내내 0회"를 구분하지 못한다. 정확히 이 저장소만 할 수 있는
+판정이다: DBTower가 원료(주기 영속)를 낳고, 여기서 장기 창으로 판정한다.
+
+**전제(DBTower 몫 — 그쪽 ROADMAP "운영 병목 아크 B3")**: `index_usage_snapshot`
+(instance_id·table·index·scans·captured_at, 6시간 주기·7일 보존) + `indexUsageStats()`
+4기종(PG pg_stat_user_indexes / MSSQL dm_db_index_usage_stats / MySQL
+table_io_waits_summary_by_index_usage / Mongo $indexStats), Oracle은 UNSUPPORTED 정직
+(MONITORING USAGE 침습·AWR 라이선스). 값 의미는 "재시작 이후 누적".
+
+| ID | 항목 | 내용 | 검증 기준 |
+|---|---|---|---|
+| X1 | 레지스트리 편입 | 테이블 스펙 레지스트리에 `index_usage_snapshot` 추가 — 워터마크 captured_at, 게이트 프로필은 wait_event와 동형(행 없음이 정상일 수 있는 축은 SKIP) | 첫 offload 멱등·게이트 통과 |
+| X2 | 스테이징·팩트 | 누적 카운터 → 일간 델타는 **2편 first-vs-last + 순리셋 클램프 패턴 그대로 재사용**(재시작 리셋이 음수 델타로 새는 것 방지). `fct_index_daily`(인스턴스·테이블·인덱스·dt·delta_scans) | 리셋 주입 시 클램프 동작 unit test |
+| X3 | 판정 마트 | `mart_index_verdict` — 관측 창(예: 90일) 내 delta_scans 합·마지막 사용일·관측 일수. **판정 컬럼은 조언 어휘로**(candidate_unused 등), 삭제 지시 아님 | 창 미달 인덱스가 "관측 부족"으로 분리 |
+| X4 | 판정 예외 규칙 | (1) unique/FK 제약 백업 인덱스는 스캔 0이어도 제외 — DBTower 스냅샷에 제약 여부 컬럼이 없으면 X1에서 스펙 확장 요청, (2) 레플리카 전용 사용 오판 한계를 판정문에 명시(프라이머리 통계만 수집), (3) 월말·분기 배치용 장주기 인덱스 — 창 90일의 근거와 한계를 함께 표기 | 예외 3종이 판정문에 실제 표기 |
+| X5 | 서빙 | Metabase 카드(후보 목록·마지막 사용일) + `lakehouse_query` 도구로 자연어 질의 가능 확인 | 카드 실물 + MCP 질의 왕복 |
+
+함정: 인덱스명은 재생성 시 동일 이름·다른 실체가 될 수 있다 — (table, index) 키에 최초 관측일을
+함께 들고, 사라진 인덱스는 판정 대상에서 제외(존재 여부는 DBTower describeSchema가 진실).
+
 **정직한 한계**: Metabot 스타일 "Metabase 화면 안 채팅 UI"는 셀프호스트에선 안 된다(Cloud 전용).
 이 경로는 대화가 에이전트(Claude/Discord)에서 일어나고 **결과물이 Metabase에 남는** 형태다.
 기존 DB 연결의 3계층 분업은 불변 — 장기=mart(이 단계), 라이브 7일=DBTower 기존 도구, 관제 대상
