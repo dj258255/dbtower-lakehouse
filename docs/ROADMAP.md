@@ -1012,6 +1012,83 @@ DB 직결=금지(가드레일 1).
 
 ---
 
+## 16단계 — 판정의 마지막 마일: 플랜 회귀·백업 공백·주간 보고 (미착수 — 2026-07-18 기획)
+
+**상황 가정 셋 (전부 "사람 병목" — 현업 DBA의 시간이 어디서 새는가)**:
+
+1. **새벽 3시, 특정 쿼리가 갑자기 느려졌다는 신고.** 단골 원인은 옵티마이저의 플랜 변경 —
+   통계 갱신·데이터 분포 변화로 플랜을 갈아탔는데 새 플랜이 더 느린 경우다. 지금 창고에는
+   `plan_snapshot`(플랜이 언제 어떤 해시로 바뀌었나)과 `fct_query_daily`(그 쿼리의 일별
+   평균 지연)가 **둘 다 있는데 서로 모른다**. DBA는 여전히 플랜 이력과 지연 그래프를
+   눈으로 대조한다(건당 30분). 이건 "며칠치 전후 비교"가 필요한 판정이라 라이브 7일
+   시야(DBTower)가 아니라 장기 창고의 몫이다.
+2. **복구하려고 보니 백업이 3주째 조용히 안 돌고 있었다.** DBA 최악의 시나리오. `fct_backup_daily`는
+   일별 성공/실패 집계까지만 있고 **"이 인스턴스의 마지막 성공 백업이 며칠 전인가"라는 판정
+   컬럼이 없다**. 실패는 시끄럽지만(FAILED 행이 남음) **공백은 조용하다**(행 자체가 없음) —
+   지금 실데이터도 6인스턴스 중 3개만 백업 기록이 있는데, 그 3개의 부재를 아무도 묻지 않는다.
+3. **월요일 오전은 보고서 만드는 날.** 현업 DBA 시간을 제일 많이 먹는 건 장애가 아니라 보고다.
+   용량 D-day·대기 이벤트 top·플랜 변경 건수·백업 상태를 매주 사람이 화면 4곳에서 긁어모아
+   문서로 만든다. 재료(마트 4개)는 전부 창고에 있는데 **한 장으로 접는 계층이 없다**.
+
+**한계·전제 (2026-07-18 실데이터 기준 — 지어낸 것 없음)**:
+
+- `fct_plan_change_daily`는 (instance_id, dt) grain의 **건수 집계**라 회귀 판정 재료가 못 된다.
+  판정은 쿼리 단위 뒤집힘 **이벤트**(어느 쿼리가 언제 어떤 해시→해시로)가 필요하고, 그건
+  `stg_plan_snapshot`(id, instance_id, query_id, plan_hash, captured_at, dt)에서 다시 꺼내야 한다.
+- plan_snapshot 원천 보존은 카운트 기반(쿼리당 최신 20개) + 48h 하한(D2)이다. 창고에 적재된
+  뒤로는 영구지만, **적재 이전 과거의 "직전 플랜"은 이미 지워졌을 수 있다** — lag 기반 뒤집힘
+  검출은 창고에 남은 이력 기준이고, D2(2026-07-18) 이후 적재분부터 정확하다. 정직하게 명기.
+- 백업 공백의 "기준 시각"을 벽시계(오늘)로 잡으면 **파이프라인 중단과 백업 중단을 구분 못 한다**
+  (파이프라인이 죽어도 gap이 자란다). 기준은 창고의 최신 dt — 파이프라인 신선도는 게이트와
+  deadman이 이미 담당하는 관심사 분리를 지킨다.
+- Metabase 구독(이메일 발송)은 SMTP 설정이 전제다. 셀프호스트 어플라이언스에 SMTP를 강제할 수
+  없으므로 **구독은 문서화된 선택지, 실측 범위는 대시보드까지**.
+
+**판단**: 셋 다 신규 수집 0 — 이미 내린 데이터를 **판정 컬럼까지** 밀어붙이는 일이다. 13단계
+(용량 D-day)에서 확립한 원칙 그대로: **lakehouse는 판정 컬럼까지만 계산하고, 발화(알림)는
+Metabase(pull) 또는 DBTower(push)의 몫** — 두 번째 알림 시스템을 만들지 않는다. 이 단계가
+끝나면 "장기 창고가 있어서 가능한 판정" 3종(용량 D-day·플랜 회귀·백업 공백)이 모두 갖춰지고,
+주간 보고는 그 판정들의 요약 서빙이 된다.
+
+### 착수 명세 (Opus) — 16단계
+
+> 전부 이 저장소(lakehouse) 작업, G7만 DBTower. 기존 자산(증분 delete+insert + 워터마크 리터럴
+> 패턴, seed+schema contract 패턴, ci_fixture 합성, metabase_bootstrap 패턴, publish 원자성) 최대 재사용.
+
+| # | 조각 | 어디 집 | 구현 명세 | 검증 기준 |
+|---|---|---|---|---|
+| G1 | 플랜 뒤집힘 이벤트 | lakehouse | `int_plan_flip`(또는 mart 내 CTE): `stg_plan_snapshot`에서 `lag(plan_hash) over (partition by instance_id, query_id order by captured_at)`로 해시가 **실제로 바뀐 행만** 이벤트화 — (instance_id, query_id, flip_at, dt, prev_plan_hash, new_plan_hash). 첫 관측(직전 없음)은 뒤집힘이 아니라 등장이므로 제외 | unit: 동일 해시 반복은 0건, A→B→A는 2건 |
+| G2 | mart_plan_regression | lakehouse | 뒤집힘 이벤트별로 `fct_query_daily.avg_latency_ms`를 조인해 **전 N일 vs 후 N일**(기본 N=3, var로 노출) 평균 비교. 컬럼: before_avg_ms, after_avg_ms, latency_ratio, `regressed` 판정(비율 ≥ 임계 and 후기간 호출 수 ≥ 최소치 — 저호출 노이즈 가드), `verdict`(REGRESSED/IMPROVED/NEUTRAL/**PENDING**(후 N일 미도래)/**AMBIGUOUS**(비교창 안에 다른 뒤집힘)). 임계·최소 호출 수는 seed `plan_regression_thresholds.csv`(capacity_thresholds 패턴 — schema contract + 기본행) | unit 3종: 회귀(비율>임계)·개선·PENDING. 합성으로 산식 고정 |
+| G3 | 비교창 오염 가드 | lakehouse | (a) 뒤집힘 당일 dt는 전/후가 섞이므로 **양쪽에서 제외**. (b) 같은 쿼리의 인접 뒤집힘 간격 < 2N+1일이면 AMBIGUOUS — 판정을 지어내지 않는다. (c) 후 N일이 아직 안 지났으면 PENDING — 매일 재계산되며 자연 확정 | unit: 당일 제외 산식, 인접 뒤집힘 AMBIGUOUS |
+| G4 | mart_backup_rpo | lakehouse | 인스턴스 유니버스는 `fct_query_daily`의 distinct instance_id(전 기종 공통 관측 — **database_instance 신규 추출 없이** 전수 확보)에 `fct_backup_daily`를 left join. 컬럼: last_success_dt(success_runs>0인 최신 dt), last_verified_dt, gap_days(**기준 = 창고 전체 max dt**, 벽시계 아님), `rpo_breach` 판정(gap_days > 임계 or **백업 기록 전무**), `never_backed_up` 플래그. 임계는 seed `backup_rpo_thresholds.csv`(default_max_gap_days + 인스턴스별 override — 로그 백업 주기는 기종별이라 일 단위만 판정, 시간 단위는 라이브(DBTower) 몫으로 명기) | 실데이터: 백업 기록 없는 3개 인스턴스가 never_backed_up=true 행으로 **나타남**(left join 누락 없음) |
+| G5 | mart_weekly_ops_report | lakehouse | grain = (week_start, instance_id) 1행. 4계 요약: 용량(min days_to_threshold, worst risk_flag — mart_capacity_forecast), 대기(top 이벤트명·delta_ms — mart_wait_top), 플랜(주간 뒤집힘 수·REGRESSED 수 — G2), 백업(gap_days·rpo_breach — G4). 주 경계는 date_trunc('week') UTC(dow×hour와 같은 결 — 표시만 로컬). materialized=table(주 1회 소비, 증분 불필요 — 전체 재계산이 단순·정확) | 주간 1행/인스턴스, 4계 컬럼이 원천 마트 값과 대조 일치 |
+| G6 | 서빙 — 카드·대시보드 | lakehouse | `metabase_bootstrap.py` 패턴으로 "주간 운영 보고" 대시보드: G5 표 1장 + 플랜 회귀 목록(G2 REGRESSED만) + 백업 공백 목록(G4 breach만) 카드. 구독(이메일)은 SMTP 전제라 **문서화만**(RUNBOOK에 설정 절차) — 실측은 대시보드 실화면까지 | 대시보드 실화면 스크린샷, 카드가 판정 컬럼(REGRESSED/breach)으로 필터됨 |
+| G7 | MCP 스키마 편입 | DBTower | `lakehouse_query` 도구 설명의 실재 스키마 목록에 신규 마트 3종 추가(15단계 N3 원칙 — 에이전트가 지어내지 않고 실재 컬럼으로 질의). 코드 변경은 도구 설명 문자열 갱신 수준 | MCP로 "지난주 플랜 회귀 있어?" 질의 왕복 |
+| G8 | 발행·계보·CI | lakehouse | publish_marts MART_TABLES 10→13(G2·G4·G5), exposures.yml에 주간 보고 대시보드 exposure 추가, ci_fixture에 합성 시나리오(플랜 A→B 뒤집힘+지연 악화, 백업 공백 인스턴스) 편입 — CI가 판정 로직을 회귀 감시 | CI 그린(전 unit·data test), publish 행수 대조 |
+
+**함정(선검증)**:
+- (a) **avg_latency_ms의 NULL** — delta_calls=0인 날은 지연이 NULL이다(0 아님, fct_query_daily의
+  nullif 설계). 전/후 평균은 NULL 제외 평균으로 계산하고, 관측일 수가 최소치 미만이면 PENDING
+  취급 — NULL을 0으로 접으면 회귀를 개선으로 오판한다.
+- (b) **뒤집힘 없는 회귀는 이 마트의 몫이 아니다** — 데이터 증가로 같은 플랜이 느려지는 경우는
+  mart_query_regression(롤링 랭킹)의 관심사. 겹치지 않게 문서에 경계 명기(둘은 원인 축이 다르다:
+  플랜 변경 vs 볼륨 성장).
+- (c) **regr 판정의 재현성** — 13단계 CI에서 배운 것(플랫폼별 부동소수): 비율 비교는 반올림한
+  값(소수 2자리)으로 고정해 unit test가 러너와 맥에서 같은 답을 내게.
+- (d) **백업 공백 판정의 이중 부정** — "백업 테이블에 행이 없음"은 (i) 백업이 안 돎 (ii) 그
+  기종의 백업 이력을 DBTower가 아직 수집 안 함, 두 경우가 있다. 지금 실데이터의 3개 부재가
+  어느 쪽인지 착수 시점에 원천에서 먼저 확인하고, (ii)면 판정을 UNKNOWN으로 분리 — 안 잰 것을
+  잰 척하지 않는다(게이트 SKIP과 같은 결).
+- (e) **주간 마트의 빈 주** — 이력이 7일 미만인 초기엔 주간 행이 부분 주다. week_start에
+  is_partial_week 플래그를 둬 소비자(대시보드)가 반쪽 주를 온전한 주와 비교하지 않게.
+
+**검증 기준(실측 TODO)**: 합성 뒤집힘 주입 → REGRESSED 판정 재현 + 실데이터 plan_snapshot
+13행에 대한 판정 실행(PENDING/NEUTRAL 분포 확인) + 백업 미기록 3개 인스턴스의 행 존재 +
+주간 보고 대시보드 실화면 + CI 그린. 블로그: lakehouse 10편(판정 3종 완성 서사 — "창고가
+있어서 가능한 판정"이 용량·플랜·백업으로 완결) 예정.
+
+---
+
 ## 시간이 해제하는 체크리스트 (2026-07-18 기준 — 코드는 완성, 데이터가 쌓이길 기다림)
 
 > 구현이 남은 게 아니라 **이력이 쌓여야 의미가 생기는** 항목들. 각각 해제 조건과 그
@@ -1207,8 +1284,13 @@ Airflow(오케스트레이터 점유 1위, PyPI 다운로드 2위의 10배) + db
 
 ## 블로그 계획
 
-새 시리즈(카테고리 분리, DBTower와 별개). 0편(왜: 버려지는 7일)→1~5편(단계별). 각 편 개선 아크.
-DBTower 0편에서 "관측 데이터의 다음 여정"으로 상호 링크.
+새 시리즈(카테고리 분리, DBTower와 별개). 각 편 개선 아크. DBTower 0편에서 "관측 데이터의
+다음 여정"으로 상호 링크.
+
+- 발행됨: 0~6편(단계별) · **7편**(11단계 셀프호스트) · **8편**(12단계 N축) · **9편**(14단계
+  레지스트리·되쓰기) · DBTower 측 **19편**(15단계 자연어 서빙 — 그쪽 시리즈).
+- 예정: **10편** — 16단계(판정 3종 완결: 용량 D-day·플랜 회귀·백업 공백 + 주간 보고).
+  구현 → 라이브 실측 → 실화면 스크린샷 → 작성 리듬 유지.
 
 ## Sources (전제·함정 검증)
 - [AWS PI 7일 무료 보존](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PerfInsights.Overview.cost.html)
