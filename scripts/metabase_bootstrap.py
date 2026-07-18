@@ -263,6 +263,81 @@ limit 30\
 """
 
 
+# ---------------------------------------------------------------- 주간 운영 보고 (Phase 16 G6)
+# 판정 3종(용량·플랜·백업)의 마지막 마일 — "월요일 보고서"를 마트로 접는다. 발화는 안 하고
+# 사람이 pull로 본다(13단계 원칙). 원천은 16단계 마트(DuckLake, publish가 발행).
+WEEKLY_DASHBOARD_NAME = "주간 운영 보고"
+
+WEEKLY_REPORT_SQL = """\
+select
+    instance_id,
+    capacity_worst_risk       as capacity_risk,
+    min_days_to_threshold     as d_day,
+    top_wait_event            as top_wait,
+    plan_flips_this_week      as plan_flips,
+    plan_regressed_this_week  as plan_regressed,
+    backup_gap_days           as backup_gap_days,
+    backup_status             as backup_status
+from mart_weekly_ops_report
+order by instance_id\
+"""
+
+BACKUP_RPO_SQL = """\
+select
+    instance_id,
+    as_of_dt,
+    last_success_dt,
+    gap_days,
+    max_gap_days,
+    rpo_status
+from mart_backup_rpo
+where rpo_status <> 'ok'
+order by no_successful_backup desc, gap_days desc nulls last\
+"""
+
+PLAN_REGRESSION_SQL = """\
+select
+    instance_id,
+    substr(query_id, 1, 20)  as query_id,
+    flip_dt,
+    prev_plan_hash,
+    new_plan_hash,
+    before_avg_ms,
+    after_avg_ms,
+    latency_ratio,
+    after_calls,
+    verdict
+from mart_plan_regression
+order by (verdict = 'REGRESSED') desc, latency_ratio desc nulls last\
+"""
+
+
+def ensure_weekly_dashboard(token: str, cards: dict[str, int]) -> int:
+    """주간 운영 보고 — 보고표 1장 + 백업 공백(breach/미관측) + 플랜 회귀 목록."""
+    for dash in api("GET", "/api/dashboard", token=token):
+        if dash["name"] == WEEKLY_DASHBOARD_NAME:
+            print(f"[dashboard] 기존 재사용: {WEEKLY_DASHBOARD_NAME} (id={dash['id']})")
+            return dash["id"]
+    dash = api("POST", "/api/dashboard", token=token, body={
+        "name": WEEKLY_DASHBOARD_NAME,
+        "description": "용량 D-day·top 대기·플랜 뒤집힘·백업 공백을 한 장으로(16단계). "
+                       "판정까지만 계산하고 발화는 안 한다 — 사람이 pull로 본다.",
+    })
+    dash_id = dash["id"]
+    api("PUT", f"/api/dashboard/{dash_id}", token=token, body={
+        "dashcards": [
+            {"id": -1, "card_id": cards["weekly"], "row": 0, "col": 0,
+             "size_x": 24, "size_y": 6},
+            {"id": -2, "card_id": cards["backup"], "row": 6, "col": 0,
+             "size_x": 12, "size_y": 7},
+            {"id": -3, "card_id": cards["plan"], "row": 6, "col": 12,
+             "size_x": 12, "size_y": 7},
+        ],
+    })
+    print(f"[dashboard] 생성: {WEEKLY_DASHBOARD_NAME} (id={dash_id})")
+    return dash_id
+
+
 def ensure_card(token: str, db_id: int, name: str, sql: str,
                 display: str, viz: dict) -> int:
     body = {
@@ -410,6 +485,31 @@ def main() -> None:
     else:
         print("[운영] pipeline_run_log 없음 — 운영 대시보드 건너뜀"
               "(extract.run_log로 먼저 발행할 것)")
+
+    # 주간 운영 보고(Phase 16 G6) — 16단계 마트가 발행돼 있을 때만 얹는다.
+    api("POST", f"/api/database/{db_id}/sync_schema", token=token)
+    tables = set()
+    for _ in range(30):
+        time.sleep(2)
+        tables = {t["name"] for t in api("GET", f"/api/database/{db_id}/metadata", token=token)["tables"]}
+        if "mart_weekly_ops_report" in tables:
+            break
+    if "mart_weekly_ops_report" in tables:
+        weekly_cards = {
+            "weekly": ensure_plain_card(
+                token, db_id, "주간 운영 보고 — 인스턴스별 4계",
+                WEEKLY_REPORT_SQL, "table", {}),
+            "backup": ensure_plain_card(
+                token, db_id, "백업 공백 — breach·미관측",
+                BACKUP_RPO_SQL, "table", {}),
+            "plan": ensure_plain_card(
+                token, db_id, "플랜 회귀 — 뒤집힘 후 지연 판정",
+                PLAN_REGRESSION_SQL, "table", {}),
+        }
+        weekly_dash_id = ensure_weekly_dashboard(token, weekly_cards)
+        print(f"[주간] {MB_URL}/dashboard/{weekly_dash_id}")
+    else:
+        print("[주간] mart_weekly_ops_report 없음 — 주간 보고 건너뜀(publish 먼저)")
     print(f"\n완료 — ({ADMIN_EMAIL}로 로그인)")
 
 
