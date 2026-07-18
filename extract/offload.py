@@ -237,11 +237,77 @@ def run_offload_aux(logical_date: str | date) -> dict[str, dict]:
 
     레지스트리의 available 보조 테이블을 순회 — 주 파이프라인(query_snapshot)과
     분리된 태스크로 돌아, 보조 실패가 주 경로의 heartbeat를 굶기지 않는다.
+
+    Phase 20: 차원(database_instance)도 같은 태스크에서 스냅샷한다 — 기종 축의 원료.
     """
     results: dict[str, dict] = {}
     for name in AUX_TABLES:
         results[name] = run_offload(logical_date, table=name)
+    results["dim_instance"] = run_offload_dim(logical_date)
     return results
+
+
+# 차원 스냅샷 — 팩트(시계열)와 달리 database_instance는 인스턴스 목록 자체다(느린 변화 차원).
+# 워터마크·instance_id 파티션이 없어 run_offload를 못 쓴다. 매 dt에 전량을 한 파일로 스냅샷해
+# type(기종)·name의 변화 이력까지 남긴다 — 마트(dim_instance)가 최신 dt만 취해 현재 상태를 만든다.
+_DIM_INSTANCE_COLUMNS = ("id", "name", "type", "team_label")
+_DIM_INSTANCE_SCHEMA = pa.schema([
+    pa.field("id", pa.int64(), nullable=False),
+    pa.field("name", pa.string(), nullable=True),
+    pa.field("type", pa.string(), nullable=True),
+    pa.field("team_label", pa.string(), nullable=True),
+])
+
+
+def run_offload_dim(logical_date: str | date) -> dict:
+    """database_instance를 raw/dim_instance/dt=<dt>/part-000.parquet로 스냅샷한다 (Phase 20).
+
+    기종 축의 원료 — 마트들이 instance_id밖에 없어 "기종은 DBTower 화면에서 보라"고 각주를
+    달던 한계를, 이 차원을 조인해 창고 안에서 해소한다. 팩트 오프로드의 인스턴스 루프·워터마크
+    패턴과 무관한 단순 전량 스냅샷(행 수가 작다).
+    """
+    dt = parse_logical_date(logical_date)
+    src, sink = SourceConfig(), SinkConfig()
+    s3 = _s3_client(sink)
+    _ensure_bucket(s3, sink.bucket)
+
+    conn = psycopg2.connect(src.dsn())
+    conn.set_session(readonly=True, autocommit=False)
+    try:
+        buffers: list[list] = [[] for _ in _DIM_INSTANCE_COLUMNS]
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {', '.join(_DIM_INSTANCE_COLUMNS)} FROM database_instance ORDER BY id"
+            )
+            for r in cur:
+                for i, v in enumerate(r):
+                    buffers[i].append(v)
+    finally:
+        conn.rollback()
+        conn.close()
+
+    rows = len(buffers[0])
+    prefix = f"raw/dim_instance/dt={dt.isoformat()}/"
+    if rows == 0:
+        # 인스턴스 0개는 이상 신호(원천 계약 위반) — 조용히 빈 파티션을 쓰지 않는다.
+        if _prefix_exists(s3, sink.bucket, prefix):
+            raise ArchiveSelfDestructError(
+                "database_instance 0행인데 기존 dim 파티션 존재 — 유일본 파괴 차단(fail-closed)."
+            )
+        log.warning("database_instance 0행 — dim 스냅샷 스킵")
+        return {"table": "dim_instance", "dt": dt.isoformat(), "rows": 0}
+
+    arrays = [pa.array(buf, type=f.type)
+              for buf, f in zip(buffers, _DIM_INSTANCE_SCHEMA, strict=True)]
+    table = pa.Table.from_arrays(arrays, schema=_DIM_INSTANCE_SCHEMA)
+
+    _delete_prefix(s3, sink.bucket, prefix)
+    buf = io.BytesIO()
+    pq.write_table(table, buf, compression="zstd")
+    buf.seek(0)
+    s3.put_object(Bucket=sink.bucket, Key=prefix + "part-000.parquet", Body=buf.getvalue())
+    log.info("차원 스냅샷 dim_instance dt=%s %d행 → s3://%s/%s", dt, rows, sink.bucket, prefix)
+    return {"table": "dim_instance", "dt": dt.isoformat(), "rows": rows}
 
 
 if __name__ == "__main__":
@@ -253,5 +319,7 @@ if __name__ == "__main__":
     tbl = sys.argv[2] if len(sys.argv) > 2 else PRIMARY_TABLE
     if tbl == "aux":
         print(json.dumps(run_offload_aux(day), ensure_ascii=False, indent=2))
+    elif tbl == "dim":
+        print(json.dumps(run_offload_dim(day), ensure_ascii=False, indent=2))
     else:
         print(json.dumps(run_offload(day, table=tbl), ensure_ascii=False, indent=2))

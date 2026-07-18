@@ -1228,6 +1228,40 @@ max 서브쿼리 조합에서 DuckDB 내부오류. 명시 컬럼 + anchor CTE(da
 
 ---
 
+## 20단계 — 기종 축(dim_instance)과 상관 볼륨 축 (구현 완료 — 2026-07-18, VERIFICATION 20절)
+
+**상황 가정**: 지금까지 여러 마트가 같은 각주를 달았다 — "기종 축이 없다, 소비자는 DBTower
+화면에서 기종을 안다"(`mart_wait_top`은 delta/last의 의미가 기종별로 다른데 못 구분,
+`mart_backup_rpo`는 no_backup이 미백업인지 기종 미수집인지 못 구분). 대시보드도 `instance_id 4`
+같은 숫자뿐이라 안 읽힌다. 그런데 정작 기종이 든 `database_instance`는 **이미 매 오프로드가
+읽고 있었다**(인스턴스 id를 뽑느라). 컬럼 두 개(name·type)만 더 실으면 그 각주들이 사라진다.
+
+**판단(과설계 경계)**: 이건 새 기능이라기보다 **흩어진 정직 한계의 회수**다. `database_instance`는
+느린 변화 차원(mutable)이라 팩트 오프로드(시계열·instance_id 파티션)와 다르다 — 별도 스냅샷
+오프로드 + 최신 dt만 취하는 차원 마트로 처리한다. 상관 축은 사용자 요청대로 볼륨(용량)까지
+넓히되, config→디스크의 인과가 약함을 인정해 우선순위 최하·조언 어휘로만 싣는다.
+
+| # | 조각 | 구현 명세 | 검증 |
+|---|---|---|---|
+| F1 | 차원 오프로드 | `run_offload_dim` — database_instance(id·name·type·team_label) 전량을 `raw/dim_instance/dt=<dt>/part-000.parquet`로 스냅샷(instance_id 파티션 없음, 팩트 루프 무관). run_offload_aux에 편입(매 사이클), CLI `dim`. 0행이면 fail-closed | 라이브 7행 스냅샷 |
+| F2 | 차원 마트 | `stg_dim_instance` + `dim_instance`(최신 dt만 취해 현재 상태). engine=type(MYSQL/POSTGRESQL/MSSQL/MONGODB/ORACLE), instance_name=name | unique(instance_id)·not_null(engine) |
+| F3 | 각주 회수 | `mart_wait_top`·`mart_weekly_ops_report`에 dim_instance 조인해 `engine`·`instance_name` 편입 — 소비자가 창고 안에서 기종을 안다. 대시보드가 `local-mysql (MYSQL)`로 읽힘 | 라이브 7기종 라벨 |
+| F4 | 상관 볼륨 축 | `mart_config_impact`에 변경 전후 용량(fct_size_daily) 비교 추가. correlation에 `followed_by_size_growth`(우선순위 최하 — 인과 약함). 지연·볼륨을 (instance,dt)로 선접어 카티전 방어 | unit test(size_growth) |
+| F5 | 서빙·계보 | publish 18→19(dim_instance), CI 픽스처 dim(파티션 다름)·env, MCP 도구 설명(dim_instance+기종 컬럼+볼륨 축), CONTRACT 차원 절 | CI 그린 |
+
+**함정(선검증)**: (a) 차원은 instance_id 파티션이 없어 read_parquet 경로 패턴이 팩트와 다르다
+(`dt=*/*.parquet`) — 픽스처·소스 양쪽에 반영. (b) 볼륨 축은 3-way 조인(flips×lat×size)이라
+지연·볼륨을 (instance,dt) 단위로 먼저 접어 폭발을 막는다(평균/합 의미 불변).
+
+> 실행 기록(2026-07-18 — VERIFICATION 20절): **F1~F5 완료.** 로컬 dbt build **PASS=117**(unit
+> test size_growth 신규)·pytest 57 그린. **실데이터**: dim_instance 7행(local-mysql/MYSQL,
+> dbtower-self/POSTGRESQL, local-oracle/ORACLE …). `mart_weekly_ops_report`·`mart_wait_top`이
+> 이제 실명+기종으로 읽힌다 — top 대기(binlog=MySQL, WalSenderMain=PG, RESOURCE_SEMAPHORE=MSSQL,
+> globalLock=Mongo, resmgr=Oracle)가 기종과 나란히 보여 의미가 바로 선다. mart_config_impact에
+> before/after_bytes·size_ratio 추가. MCP 도구 설명·Metabase 주간 카드 갱신(실화면). 발행 19테이블.
+
+---
+
 ## 시간이 해제하는 체크리스트 (2026-07-18 기준 — 코드는 완성, 데이터가 쌓이길 기다림)
 
 > 구현이 남은 게 아니라 **이력이 쌓여야 의미가 생기는** 항목들. 각각 해제 조건과 그

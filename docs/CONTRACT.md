@@ -12,7 +12,7 @@
   | 테이블 | 역할 | 읽는 것 |
   |---|---|---|
   | `query_snapshot` | 팩트(쿼리 성능 스냅샷 원본) | 전체 컬럼(아래 스키마) |
-  | `database_instance` | 레지스트리(어느 인스턴스를 훑을지 = 루프 드라이버) | `id` (`offload.py::_list_instance_ids`) + 품질 게이트 completeness의 기대 인스턴스 집합 |
+  | `database_instance` | 레지스트리(어느 인스턴스를 훑을지 = 루프 드라이버) + **기종 차원**(20단계) | `id` (`offload.py::_list_instance_ids`) + completeness 기대 집합 + `name`·`type`(기종)·`team_label`을 차원(`dim_instance`)으로 스냅샷 — 이미 읽던 원천이라 컬럼만 추가, 새 GRANT 불필요 |
 
   > **왜 두 개인가**: `query_snapshot`을 `captured_at`만으로 훑으면 인덱스
   > `idx_snapshot_instance_time(instance_id, captured_at)`의 선두 컬럼을 못 탄다(가드레일 1 —

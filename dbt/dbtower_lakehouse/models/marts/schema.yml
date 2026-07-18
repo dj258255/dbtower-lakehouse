@@ -408,7 +408,17 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ["followed_by_regression", "followed_by_plan_flip", "followed_by_latency_rise", "no_signal"]
+                values: ["followed_by_regression", "followed_by_plan_flip", "followed_by_latency_rise", "followed_by_size_growth", "no_signal"]
+
+  # --- 20단계 — 인스턴스 차원(기종 축) ---
+  - name: dim_instance
+    description: >
+      인스턴스 차원(20단계) — database_instance 최신 스냅샷. instance_id·instance_name·engine
+      (MYSQL/POSTGRESQL/MSSQL/MONGODB/ORACLE)·team_label. 마트들의 "기종 축 없음" 각주를 조인으로
+      해소한다(mart_wait_top·mart_weekly_ops_report에 engine·instance_name 편입).
+    columns:
+      - {name: instance_id, tests: [not_null, unique]}
+      - {name: engine, tests: [not_null]}
 
   - name: fct_index_daily
     description: >

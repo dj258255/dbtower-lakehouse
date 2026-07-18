@@ -87,6 +87,8 @@ select
     w.week_end,
     (w.max_dt < w.week_end)                                                 as is_partial_week,
     u.instance_id,
+    di.instance_name,
+    di.engine,
     cap.min_days_to_threshold,
     case cap.worst_rank
         when 1 then 'd30' when 2 then 'd90' when 3 then 'growth_only'
@@ -101,6 +103,7 @@ select
     current_timestamp                                                       as computed_at
 from universe u
 cross join week_bounds w
+left join {{ ref('dim_instance') }} di on u.instance_id = di.instance_id
 left join cap       on u.instance_id = cap.instance_id
 left join wait_top1 wt on u.instance_id = wt.instance_id
 left join plan_wk   pw on u.instance_id = pw.instance_id

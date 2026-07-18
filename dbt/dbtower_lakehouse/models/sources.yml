@@ -189,3 +189,18 @@ sources:
           - {name: new_value, data_type: varchar}
           - {name: change_kind, data_type: varchar}
           - {name: dt, data_type: varchar}
+      - name: dim_instance
+        description: >
+          인스턴스 차원 스냅샷(20단계) — database_instance 전량을 매 dt에 한 파일로. 기종 축의
+          원료(마트가 instance_id밖에 없던 한계를 조인으로 해소). type=기종(MYSQL/POSTGRESQL/
+          MSSQL/MONGODB/ORACLE), name=사람이 읽는 이름. 느린 변화 차원이라 마트가 최신 dt만 취함.
+        meta:
+          external_location: >-
+            {{ env_var('RAW_DIM_INSTANCE_LOCATION',
+               "read_parquet('s3://lakehouse/raw/dim_instance/dt=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: name, data_type: varchar}
+          - {name: type, data_type: varchar}
+          - {name: team_label, data_type: varchar}
+          - {name: dt, data_type: varchar}

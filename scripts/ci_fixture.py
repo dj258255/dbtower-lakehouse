@@ -260,7 +260,17 @@ def build_aux_fixtures(base_dir: str) -> None:
         pa.array([ts("2026-01-01 01:00:00")], pa.timestamp("us")),
         pa.array(["work_mem"], pa.string()), pa.array(["4MB"], pa.string()),
         pa.array(["1MB"], pa.string()), pa.array(["CHANGED"], pa.string())], "2026-01-01", 1)
-    print(f"aux 픽스처 6종 생성 → {base_dir}_wait/_backup/_plan/_index/_config_snap/_config_change")
+    # 인스턴스 차원(20단계) — 팩트와 달리 instance_id 파티션 없이 dt별 한 파일(전량 스냅샷).
+    dim_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("name", pa.string(), nullable=True),
+        pa.field("type", pa.string(), nullable=True), pa.field("team_label", pa.string(), nullable=True)])
+    dim_dir = Path(base_dir + "_dim") / "dt=2026-01-01"
+    dim_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_arrays([
+        pa.array([1, 2], pa.int64()), pa.array(["local-mysql", "local-postgres"], pa.string()),
+        pa.array(["MYSQL", "POSTGRESQL"], pa.string()), pa.array([None, None], pa.string())],
+        schema=dim_schema), dim_dir / "part-000.parquet", compression="zstd")
+    print(f"aux 픽스처 7종 생성 → {base_dir}_wait/_backup/_plan/_index/_config_snap/_config_change/_dim")
 
 
 def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: str) -> None:
@@ -293,9 +303,14 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
                 f"SELECT * FROM read_parquet('{base}{suffix}/dt=*/instance_id=*/*.parquet', "
                 "hive_partitioning = 1)"
             )
+        # 차원(dim_instance)은 instance_id 파티션이 없어 경로 패턴이 다르다.
+        con.execute(
+            "CREATE OR REPLACE VIEW raw.dim_instance AS "
+            f"SELECT * FROM read_parquet('{base}_dim/dt=*/*.parquet', hive_partitioning = 1)"
+        )
     finally:
         con.close()
-    print(f"raw 소스 8종 뷰 등록 → {duckdb_file}")
+    print(f"raw 소스 9종 뷰 등록 → {duckdb_file}")
 
 
 if __name__ == "__main__":

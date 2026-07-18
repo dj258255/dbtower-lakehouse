@@ -345,6 +345,8 @@ unit_tests:
           - {instance_id: 1, flip_dt: "2026-01-20", verdict: "REGRESSED"}
       - input: ref('fct_query_daily')
         rows: []
+      - input: ref('fct_size_daily')
+        rows: []
     expect:
       rows:
         - {instance_id: 1, change_dt: "2026-01-10", change_key: "work_mem", plan_flips_after: 1, regressed_after: 1, correlation: "followed_by_regression"}
@@ -366,7 +368,32 @@ unit_tests:
         rows:
           - {instance_id: 3, dt: "2026-01-09", avg_latency_ms: 10.0}
           - {instance_id: 3, dt: "2026-01-11", avg_latency_ms: 20.0}
+      - input: ref('fct_size_daily')
+        rows: []
     expect:
       rows:
         - {instance_id: 3, change_dt: "2026-01-10", change_key: "shared_buffers", plan_flips_after: 0, regressed_after: 0,
            before_latency_ms: 10.0, after_latency_ms: 20.0, latency_ratio: 2.0, correlation: "followed_by_latency_rise"}
+
+  - name: test_change_impact_size_growth
+    model: mart_config_impact
+    description: >
+      플랜·지연 신호가 없어도(둘 다 빈 입력) 변경 전후 용량이 임계(기본 1.1배) 이상 커지면
+      followed_by_size_growth. 20단계 축 확장 — 인과가 약한 축이라 우선순위 최하(조언). 전
+      100바이트(01-09) → 후 150바이트(01-11), 비율 1.5.
+    given:
+      - input: ref('int_change_events')
+        rows:
+          - {instance_id: 5, change_dt: "2026-01-10", change_source: "config", change_key: "wal_keep_size", old_value: "0", new_value: "1GB", change_kind: "CHANGED"}
+      - input: ref('mart_plan_regression')
+        rows: []
+      - input: ref('fct_query_daily')
+        rows: []
+      - input: ref('fct_size_daily')
+        rows:
+          - {instance_id: 5, object_name: "t", dt: "2026-01-09", total_bytes: 100}
+          - {instance_id: 5, object_name: "t", dt: "2026-01-11", total_bytes: 150}
+    expect:
+      rows:
+        - {instance_id: 5, change_dt: "2026-01-10", change_key: "wal_keep_size", plan_flips_after: 0, regressed_after: 0,
+           before_bytes: 100.0, after_bytes: 150.0, size_ratio: 1.5, correlation: "followed_by_size_growth"}

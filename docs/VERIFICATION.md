@@ -1216,3 +1216,34 @@ Metabase "설정 드리프트" 대시보드 영향 카드 갱신(change_source·
 정직한 표기: 상관은 두 축(플랜·지연) 모두 후행 관측이 필요해 당일 변경은 아직 no_signal이
 정답이다. change_review(스키마 변경)는 미착수 — int_change_events에 소스 하나로 붙는 구조만
 남겼다(저빈도 감사 데이터라 전체 아크는 값 대비 비용이 커 보류).
+
+## 20. 20단계 — 기종 축(dim_instance)·상관 볼륨 축 (2026-07-18)
+
+여러 마트가 달던 "기종 축 없음" 각주를, 이미 읽던 database_instance의 컬럼 둘(name·type)로
+회수했다. 상관은 볼륨 축까지 넓혔다.
+
+```
+run_offload_dim: database_instance 전량을 raw/dim_instance/dt=<dt>/part-000.parquet로 스냅샷
+  (instance_id 파티션 없음 — 차원). run_offload_aux 편입, CLI dim.
+stg_dim_instance + dim_instance(최신 dt만): instance_id·instance_name·engine·team_label.
+mart_wait_top·mart_weekly_ops_report: dim_instance 조인해 engine·instance_name 편입.
+mart_config_impact: 볼륨 축(fct_size_daily 전후) 추가 — correlation에 followed_by_size_growth
+  (우선순위 최하, 인과 약함). 지연·볼륨을 (instance,dt) 선접어 3-way 조인 폭발 방어.
+unit test size_growth 신규·accepted_values 5값. dbt build PASS=117·pytest 57. 발행 18→19.
+```
+
+라이브 실측(dev 창고):
+
+```
+run_offload_dim: 7행 스냅샷 → raw/dim_instance/dt=2026-07-18/.
+dim_instance 7행 — 1 local-mysql MYSQL · 2 local-postgres POSTGRESQL · 3 local-mssql MSSQL ·
+  4 dbtower-self POSTGRESQL · 7 local-mongo MONGODB · 8 local-oracle ORACLE · 32 mssql-pitr MSSQL.
+mart_weekly_ops_report/mart_wait_top: instance_id 옆에 instance_name·engine이 붙어
+  top 대기가 기종과 나란히 읽힌다(binlog=MySQL, WalSenderMain=PG, RESOURCE_SEMAPHORE=MSSQL,
+  globalLock=Mongo, resmgr=Oracle) — "기종은 DBTower에서 보라"던 각주 해소.
+mart_config_impact: before/after_bytes·size_ratio 채워짐(after는 당일 변경이라 미래창 비어 no_signal).
+Metabase 주간 카드가 local-mysql (MYSQL) 로 읽히는 실화면. MCP 도구 설명에 dim_instance 편입.
+```
+
+정직한 표기: dim_instance는 느린 변화 차원이라 최신 dt만 취한다(이름·기종 변화 이력이 필요하면
+stg_dim_instance 직접). 볼륨 축은 config→디스크 인과가 약해 우선순위 최하·조언 어휘로만 싣는다.

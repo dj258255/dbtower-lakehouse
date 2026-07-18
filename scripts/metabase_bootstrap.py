@@ -271,6 +271,8 @@ WEEKLY_DASHBOARD_NAME = "주간 운영 보고"
 WEEKLY_REPORT_SQL = """\
 select
     instance_id,
+    instance_name,
+    engine,
     capacity_worst_risk       as capacity_risk,
     min_days_to_threshold     as d_day,
     top_wait_event            as top_wait,
