@@ -225,7 +225,20 @@ def build_aux_fixtures(base_dir: str) -> None:
         pa.array(["shape1", "shape2"], pa.string()),
         pa.array([ts("2026-01-02 03:00:00"), ts("2026-01-02 15:00:00")], pa.timestamp("us"))],
         "2026-01-02", 1)
-    print(f"aux 픽스처 3종 생성 → {base_dir}_wait/_backup/_plan")
+    # 인덱스 사용 통계(17단계) — 하루 2관측(누적 카운터), last-first 델타 = 240.
+    index_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("table_name", pa.string(), nullable=False), pa.field("index_name", pa.string(), nullable=False),
+        pa.field("scan_count", pa.int64(), nullable=True), pa.field("size_bytes", pa.int64(), nullable=True),
+        pa.field("is_unique", pa.bool_(), nullable=False)])
+    write(base_dir + "_index", index_schema, [
+        pa.array([1, 2], pa.int64()), pa.array([1, 1], pa.int64()),
+        pa.array([ts("2026-01-01 06:00:00"), ts("2026-01-01 23:00:00")], pa.timestamp("us")),
+        pa.array(["orders", "orders"], pa.string()), pa.array(["idx_a", "idx_a"], pa.string()),
+        pa.array([100, 340], pa.int64()), pa.array([4096, 4096], pa.int64()),
+        pa.array([False, False], pa.bool_())], "2026-01-01", 1)
+    print(f"aux 픽스처 4종 생성 → {base_dir}_wait/_backup/_plan/_index")
 
 
 def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: str) -> None:
@@ -251,7 +264,7 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
         )
         base = fixture_dir  # aux 픽스처는 base_dir 접미 규약(_wait/_backup/_plan)
         for tbl, suffix in (("wait_event_snapshot", "_wait"), ("backup_run", "_backup"),
-                            ("plan_snapshot", "_plan")):
+                            ("plan_snapshot", "_plan"), ("index_usage_snapshot", "_index")):
             con.execute(
                 f"CREATE OR REPLACE VIEW raw.{tbl} AS "
                 f"SELECT * FROM read_parquet('{base}{suffix}/dt=*/instance_id=*/*.parquet', "
@@ -259,7 +272,7 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
             )
     finally:
         con.close()
-    print(f"raw 소스 5종 뷰 등록 → {duckdb_file}")
+    print(f"raw 소스 6종 뷰 등록 → {duckdb_file}")
 
 
 if __name__ == "__main__":

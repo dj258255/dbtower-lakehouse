@@ -135,3 +135,23 @@ sources:
           - {name: plan_shape, data_type: varchar}
           - {name: captured_at, data_type: timestamp}
           - {name: dt, data_type: varchar}
+      - name: index_usage_snapshot
+        description: >
+          인덱스 사용 통계 6시간 주기 영속(17단계, DBTower V29). scan_count는 통계 리셋
+          이후 누적(query_snapshot과 같은 성질) — 일간 실사용은 fct에서 first-vs-last 델타로
+          복원한다. is_unique는 판정 예외(유니크/PK 뒷받침은 미사용이라도 삭제 불가). Oracle은
+          원천 UNSUPPORTED라 행이 없다.
+        meta:
+          external_location: >-
+            {{ env_var('RAW_INDEX_USAGE_LOCATION',
+               "read_parquet('s3://lakehouse/raw/index_usage_snapshot/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: captured_at, data_type: timestamp}
+          - {name: table_name, data_type: varchar}
+          - {name: index_name, data_type: varchar}
+          - {name: scan_count, data_type: bigint}
+          - {name: size_bytes, data_type: bigint}
+          - {name: is_unique, data_type: boolean}
+          - {name: dt, data_type: varchar}

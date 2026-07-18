@@ -268,3 +268,61 @@ unit_tests:
            no_successful_backup: false, rpo_status: "breach"}
         - {instance_id: 3, as_of_dt: "2026-01-10", last_success_dt: null, gap_days: null,
            no_successful_backup: true, rpo_status: "no_backup_observed"}
+
+  # 인덱스 일간 사용 델타 — scan_count 누적을 first-vs-last로 접는다(fct_query_daily와 같은 심장).
+  - name: test_index_daily_delta
+    model: fct_index_daily
+    overrides:
+      macros:
+        is_incremental: false
+    description: "인덱스 스캔 누적의 하루 사용 = 그날 마지막 - 첫 스냅샷(양 끝 차분)."
+    given:
+      - input: ref('stg_index_usage_snapshot')
+        rows:
+          - {instance_id: 1, table_name: "orders", index_name: "idx_a", dt: "2026-01-01", captured_at: "2026-01-01 06:00:00", scan_count: 100, size_bytes: 4096, is_unique: false}
+          - {instance_id: 1, table_name: "orders", index_name: "idx_a", dt: "2026-01-01", captured_at: "2026-01-01 23:00:00", scan_count: 340, size_bytes: 4096, is_unique: false}
+    expect:
+      rows:
+        - {instance_id: 1, table_name: "orders", index_name: "idx_a", dt: "2026-01-01", delta_scans: 240, size_bytes: 4096, is_unique: false}
+
+  # 재기동으로 카운터 리셋(last < first)이면 음수 델타를 0에 클램프.
+  - name: test_index_daily_reset_clamp
+    model: fct_index_daily
+    overrides:
+      macros:
+        is_incremental: false
+    description: "하루 중 통계 리셋으로 last(50) < first(900)이면 GREATEST(0,..)로 0 클램프."
+    given:
+      - input: ref('stg_index_usage_snapshot')
+        rows:
+          - {instance_id: 2, table_name: "t", index_name: "idx_b", dt: "2026-01-01", captured_at: "2026-01-01 06:00:00", scan_count: 900, size_bytes: 8192, is_unique: false}
+          - {instance_id: 2, table_name: "t", index_name: "idx_b", dt: "2026-01-01", captured_at: "2026-01-01 23:00:00", scan_count: 50, size_bytes: 8192, is_unique: false}
+    expect:
+      rows:
+        - {instance_id: 2, table_name: "t", index_name: "idx_b", dt: "2026-01-01", delta_scans: 0, size_bytes: 8192, is_unique: false}
+
+  # 미사용 인덱스 판정 4갈래 — 사용중/유니크제외/관측부족/삭제후보. 앵커=최신 dt(2026-04-01), 창 90일·하한 60일.
+  - name: test_index_verdict_four_ways
+    model: mart_index_verdict
+    description: >
+      in_use(스캔>0), constraint_backed(유니크·미사용), insufficient_observation(관측<60일),
+      candidate_unused(비유니크·충분관측·사용0)를 기지 입력으로 고정.
+    given:
+      - input: ref('fct_index_daily')
+        rows:
+          # idx_hot: 사용 있음 → in_use (관측 짧아도 사용중이 우선)
+          - {instance_id: 1, table_name: "t", index_name: "idx_hot", dt: "2026-04-01", delta_scans: 500, size_bytes: 4096, is_unique: false}
+          # idx_pk: 유니크·미사용 → constraint_backed
+          - {instance_id: 1, table_name: "t", index_name: "idx_pk", dt: "2026-01-15", delta_scans: 0, size_bytes: 8192, is_unique: true}
+          - {instance_id: 1, table_name: "t", index_name: "idx_pk", dt: "2026-04-01", delta_scans: 0, size_bytes: 8192, is_unique: true}
+          # idx_new: 비유니크·미사용·관측 짧음(같은 날뿐, 0일<60) → insufficient_observation
+          - {instance_id: 1, table_name: "t", index_name: "idx_new", dt: "2026-04-01", delta_scans: 0, size_bytes: 2048, is_unique: false}
+          # idx_dead: 비유니크·미사용·관측 76일(01-15~04-01>=60) → candidate_unused
+          - {instance_id: 1, table_name: "t", index_name: "idx_dead", dt: "2026-01-15", delta_scans: 0, size_bytes: 2048, is_unique: false}
+          - {instance_id: 1, table_name: "t", index_name: "idx_dead", dt: "2026-04-01", delta_scans: 0, size_bytes: 2048, is_unique: false}
+    expect:
+      rows:
+        - {instance_id: 1, table_name: "t", index_name: "idx_hot",  total_scans: 500, observation_days: 0,  is_unique: false, verdict: "in_use"}
+        - {instance_id: 1, table_name: "t", index_name: "idx_pk",   total_scans: 0,   observation_days: 76, is_unique: true,  verdict: "constraint_backed"}
+        - {instance_id: 1, table_name: "t", index_name: "idx_new",  total_scans: 0,   observation_days: 0,  is_unique: false, verdict: "insufficient_observation"}
+        - {instance_id: 1, table_name: "t", index_name: "idx_dead", total_scans: 0,   observation_days: 76, is_unique: false, verdict: "candidate_unused"}

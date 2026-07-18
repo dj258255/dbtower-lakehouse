@@ -371,3 +371,34 @@ models:
     columns:
       - {name: week_start, tests: [not_null]}
       - {name: instance_id, tests: [not_null]}
+
+  - name: fct_index_daily
+    description: >
+      일별 인덱스 사용 팩트(17단계). scan_count 누적을 first-vs-last로 접어 하루 실사용
+      (delta_scans)을 낸다 — query_snapshot과 같은 심장, 리셋은 GREATEST(0,..) 클램프.
+      증분 delete+insert·워터마크 리터럴(검증된 패턴). is_unique·size_bytes는 판정용.
+    columns:
+      - name: instance_id
+        tests: [not_null]
+      - name: index_name
+        tests: [not_null]
+      - name: dt
+        tests: [not_null]
+      - name: delta_scans
+        tests: [not_null]
+
+  - name: mart_index_verdict
+    description: >
+      미사용 인덱스 장기 판정(17단계) — fct_index_daily의 일간 실사용을 창(기본 90일)으로
+      합산해 "지워도 되나"를 답한다. 판정 예외: 유니크/PK 뒷받침 제외, 관측 하한 미만 보류,
+      FK 뒷받침·레플리카 전용 사용은 이 통계로 판정 불가(note 정직 표기). 삭제 지시 아니라 조언.
+    columns:
+      - name: instance_id
+        tests: [not_null]
+      - name: index_name
+        tests: [not_null]
+      - name: verdict
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["in_use", "constraint_backed", "insufficient_observation", "candidate_unused"]

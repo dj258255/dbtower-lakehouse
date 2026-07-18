@@ -1098,7 +1098,7 @@ Metabase(pull) 또는 DBTower(push)의 몫** — 두 번째 알림 시스템을 
 
 ---
 
-## 17단계 — 미사용 인덱스 장기 판정: "지워도 되나"는 분기가 답한다 (미착수 — 착수 명세, 2026-07-18)
+## 17단계 — 미사용 인덱스 장기 판정: "지워도 되나"는 분기가 답한다 (X1~X4 완료 — 실행 기록 2026-07-18, X5 서빙은 이력 축적 후)
 
 "이 인덱스 지워도 되나"는 7일 관측으론 답할 수 없다. 재시작-누적 카운터의 순간 관측은
 "지난주 재기동 이후 0회"와 "분기 내내 0회"를 구분하지 못한다. 정확히 이 저장소만 할 수 있는
@@ -1124,6 +1124,17 @@ table_io_waits_summary_by_index_usage / Mongo $indexStats), Oracle은 UNSUPPORTE
 **정직한 한계**: 사용 통계는 프라이머리 기준이라 레플리카 전용 스캔을 못 본다 — 판정을 "삭제"가
 아니라 "후보(candidate_unused)"까지만 내는 이유다. 전제(B3 index_usage_snapshot 공급)가 서야
 착수한다 — 그 전엔 X1 스펙 협의까지.
+
+> 실행 기록(2026-07-18): **X1~X4 구현·검증 완료.** DBTower B3(V29 index_usage_snapshot)가
+> 공급을 열어 착수. X1 레지스트리 편입(extract/tables.py `_INDEX_USAGE_SNAPSHOT` + sources.yml,
+> gate completeness=False — Oracle UNSUPPORTED는 행 없음). X2 stg_index_usage_snapshot +
+> fct_index_daily(scan_count 누적을 **fct_query_daily와 같은 first-vs-last 델타·GREATEST(0,..)
+> 클램프**, 증분 delete+insert·워터마크 리터럴). X3 mart_index_verdict(창 기본 90일, 앵커=최신 dt).
+> X4 판정 4갈래(in_use/constraint_backed/insufficient_observation/candidate_unused) — 우선순위는
+> 사용중>유니크제외>관측부족>삭제후보, note에 FK 뒷받침·레플리카 전용 사용 미판정 정직 표기.
+> **검증**: ci_fixture에 index_usage 픽스처 추가 후 dbt build **PASS=93**(unit test 3종 신규 —
+> 델타·리셋 클램프·판정 4갈래, accepted_values로 verdict 값 계약 고정). X5 서빙(Metabase 카드·
+> `lakehouse_query` 도구는 15단계에서 이미 존재)은 실이력이 분기만큼 쌓인 뒤.
 
 ---
 

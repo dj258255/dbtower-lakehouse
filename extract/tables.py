@@ -228,9 +228,45 @@ _SIZE_SNAPSHOT = TableSpec(
     },
 )
 
+# 인덱스 사용 통계 — 미사용 인덱스 장기 판정(17단계)의 원료(DBTower V29, 2026-07-18 편입).
+# scan_count는 통계 리셋(재기동) 이후 누적이라, fct에서 query_snapshot과 같은 first-vs-last
+# 델타·클램프로 일간 실사용을 복원한다. is_unique는 판정 예외(유니크/PK 뒷받침은 미사용이라도
+# 삭제 불가)에 쓰인다. Oracle은 원천이 UNSUPPORTED라 그 사이클에 행이 없다 → completeness 끈다.
+_INDEX_USAGE_SNAPSHOT = TableSpec(
+    name="index_usage_snapshot",
+    select_columns=(
+        "id", "instance_id", "captured_at", "table_name", "index_name",
+        "scan_count", "size_bytes", "is_unique",
+    ),
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("table_name", pa.string(), nullable=False),
+        pa.field("index_name", pa.string(), nullable=False),
+        pa.field("scan_count", pa.int64(), nullable=True),
+        pa.field("size_bytes", pa.int64(), nullable=True),
+        pa.field("is_unique", pa.bool_(), nullable=False),
+    ]),
+    watermark_col="captured_at",
+    raw_prefix="raw/index_usage_snapshot",
+    gate=GateProfile(completeness=False),
+    expected_pg_columns={
+        "id": "bigint",
+        "instance_id": "bigint",
+        "captured_at": "timestamp without time zone",
+        "table_name": "character varying",
+        "index_name": "character varying",
+        "scan_count": "bigint",
+        "size_bytes": "bigint",
+        "is_unique": "boolean",
+    },
+)
+
 REGISTRY: dict[str, TableSpec] = {
     s.name: s
-    for s in (_QUERY_SNAPSHOT, _BACKUP_RUN, _PLAN_SNAPSHOT, _WAIT_EVENT_SNAPSHOT, _SIZE_SNAPSHOT)
+    for s in (_QUERY_SNAPSHOT, _BACKUP_RUN, _PLAN_SNAPSHOT, _WAIT_EVENT_SNAPSHOT, _SIZE_SNAPSHOT,
+              _INDEX_USAGE_SNAPSHOT)
 }
 
 # 주 파이프라인(게이트 4축·dbt·publish·heartbeat)이 도는 테이블.
