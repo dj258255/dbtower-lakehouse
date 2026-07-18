@@ -154,25 +154,37 @@ _PLAN_SNAPSHOT = TableSpec(
     },
 )
 
-# 대기 이벤트 — **원천에 영속 테이블이 아직 없다**(DBTower ROADMAP Phase 5 / 이쪽
-# 14단계 D1 선결). 스펙만 예약해 두고 available=False로 offload가 명확히 거부한다 —
-# "조용히 빈 결과"가 아니라 시끄러운 미지원(이 저장소의 정직 원칙).
+# 대기 이벤트 — D1(DBTower V25) 완료로 편입(2026-07-18). 예약 시절의 단일 value 대신
+# 실형은 wait_count·total_ms 두 측정값(조회 모델 WaitEvent record 그대로).
+# 기종별 의미 차이는 원천의 정직 표기를 계승한다: MySQL/MSSQL/Oracle은 누적,
+# PG는 현재 스냅샷, Mongo는 대기 큐 — 소비(마트)가 기종별로 해석해야 한다(CONTRACT §1-1).
+# 미지원/무대기 기종은 그 사이클에 행이 없다 → completeness를 끄는 이유.
 _WAIT_EVENT_SNAPSHOT = TableSpec(
     name="wait_event_snapshot",
-    select_columns=("id", "instance_id", "captured_at", "event_name", "category", "value"),
+    select_columns=(
+        "id", "instance_id", "captured_at", "event_name", "category", "wait_count", "total_ms",
+    ),
     schema=pa.schema([
         pa.field("id", pa.int64(), nullable=False),
         pa.field("instance_id", pa.int64(), nullable=False),
         pa.field("captured_at", pa.timestamp("us"), nullable=False),
         pa.field("event_name", pa.string(), nullable=False),
         pa.field("category", pa.string(), nullable=True),
-        pa.field("value", pa.int64(), nullable=False),
+        pa.field("wait_count", pa.int64(), nullable=False),
+        pa.field("total_ms", pa.float64(), nullable=False),
     ]),
     watermark_col="captured_at",
     raw_prefix="raw/wait_event_snapshot",
     gate=GateProfile(completeness=False),
-    expected_pg_columns={},
-    available=False,
+    expected_pg_columns={
+        "id": "bigint",
+        "instance_id": "bigint",
+        "captured_at": "timestamp without time zone",
+        "event_name": "character varying",
+        "category": "character varying",
+        "wait_count": "bigint",
+        "total_ms": "double precision",
+    },
 )
 
 REGISTRY: dict[str, TableSpec] = {
