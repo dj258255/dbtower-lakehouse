@@ -15,3 +15,6 @@ dbt/**/logs/
 
 # CI 임시 픽스처
 .ci_tmp/
+
+.idea/
+.playwright-mcp/

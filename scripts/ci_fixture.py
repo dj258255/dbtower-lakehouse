@@ -210,12 +210,21 @@ def build_aux_fixtures(base_dir: str) -> None:
         pa.field("query_id", pa.string(), nullable=False), pa.field("plan_hash", pa.string(), nullable=False),
         pa.field("plan_shape", pa.string(), nullable=True),
         pa.field("captured_at", pa.timestamp("us"), nullable=False)])
+    # 16단계 합성 시나리오: 01-01 대표 플랜 h1 → 01-02 h2로 교차일 뒤집힘.
+    # mart_plan_regression이 뒤집힘을 잡아 1행(후 관측 미도래이므로 PENDING — 초기 실데이터의
+    # 정직한 모습)을 낸다. 하루 안 2관측도 담아 max_by(대표 플랜) 경로를 태운다.
     write(base_dir + "_plan", plan_schema, [
         pa.array([1, 2], pa.int64()), pa.array([1, 1], pa.int64()),
-        pa.array(["q1", "q1"], pa.string()), pa.array(["h1", "h2"], pa.string()),
-        pa.array(["shape1", "shape2"], pa.string()),
+        pa.array(["q1", "q1"], pa.string()), pa.array(["h1", "h1"], pa.string()),
+        pa.array(["shape1", "shape1"], pa.string()),
         pa.array([ts("2026-01-01 03:00:00"), ts("2026-01-01 15:00:00")], pa.timestamp("us"))],
         "2026-01-01", 1)
+    write(base_dir + "_plan", plan_schema, [
+        pa.array([3, 4], pa.int64()), pa.array([1, 1], pa.int64()),
+        pa.array(["q1", "q1"], pa.string()), pa.array(["h1", "h2"], pa.string()),
+        pa.array(["shape1", "shape2"], pa.string()),
+        pa.array([ts("2026-01-02 03:00:00"), ts("2026-01-02 15:00:00")], pa.timestamp("us"))],
+        "2026-01-02", 1)
     print(f"aux 픽스처 3종 생성 → {base_dir}_wait/_backup/_plan")
 
 

@@ -11,3 +11,26 @@ seeds:
         instance_id: bigint
         threshold_bytes: bigint
         threshold_kind: varchar
+
+  - name: plan_regression_thresholds
+    description: >
+      인스턴스별 플랜 회귀 판정 임계(16단계 G2). regress_ratio = 후/전 평균지연 비율이
+      이 값 이상이면 REGRESSED(기본 1.3, 전역 기본은 var plan_regress_ratio). min_after_calls
+      = 후기간 호출수가 이 미만이면 저호출 노이즈로 NEUTRAL(기본 100, var plan_regress_min_calls).
+      여기 없는 인스턴스는 전역 기본(var)로 판정한다 — 행은 per-instance 오버라이드다. 값은 데모용.
+    config:
+      column_types:
+        instance_id: bigint
+        regress_ratio: double
+        min_after_calls: bigint
+
+  - name: backup_rpo_thresholds
+    description: >
+      인스턴스별 백업 공백(RPO) 허용 한계(16단계 G4). max_gap_days = 마지막 성공 백업 이후
+      경과 일수가 이 값을 넘으면 breach(기본 3, 전역 기본은 var backup_max_gap_days). 로그 백업
+      주기는 기종마다 달라 일 단위 판정만 한다(시간 단위 RPO는 라이브 DBTower의 몫). 여기 없는
+      인스턴스는 전역 기본(var)로 판정 — 행은 per-instance 오버라이드다. 값은 데모용.
+    config:
+      column_types:
+        instance_id: bigint
+        max_gap_days: bigint

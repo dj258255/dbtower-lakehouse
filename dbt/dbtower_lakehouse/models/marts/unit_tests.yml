@@ -172,3 +172,99 @@ unit_tests:
       rows:
         - {instance_id: 97, learning: false, threshold_bytes: 2000000000,
            threshold_kind: "volume_reported", days_to_threshold: 87, risk_flag: "d90"}
+
+  # --- Phase 16 (G1~G3) — 플랜 회귀 판정 산식을 합성 뒤집힘으로 고정 ---
+  - name: test_plan_regression_flip_regressed
+    model: mart_plan_regression
+    description: >
+      A→B 뒤집힘(01-10) 후 지연이 10ms→30ms(3배)로 악화 + 후 호출 500(임계 200 초과) →
+      REGRESSED. 대표 플랜 lag 검출 + 전/후 N일(기본 3) 평균 비교 + 비율 고정을 못박는다.
+    given:
+      - input: ref('stg_plan_snapshot')
+        rows:
+          - {instance_id: 1, query_id: "q1", plan_hash: "A", captured_at: "2026-01-09 12:00:00", dt: "2026-01-09"}
+          - {instance_id: 1, query_id: "q1", plan_hash: "B", captured_at: "2026-01-10 12:00:00", dt: "2026-01-10"}
+      - input: ref('fct_query_daily')
+        rows:
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-09", avg_latency_ms: 10.0, delta_calls: 500}
+          - {instance_id: 1, query_id: "q1", dt: "2026-01-11", avg_latency_ms: 30.0, delta_calls: 500}
+      - input: ref('plan_regression_thresholds')
+        rows:
+          - {instance_id: 1, regress_ratio: 1.5, min_after_calls: 200}
+    expect:
+      rows:
+        - {instance_id: 1, query_id: "q1", flip_dt: "2026-01-10", prev_plan_hash: "A", new_plan_hash: "B",
+           before_avg_ms: 10.0, after_avg_ms: 30.0, latency_ratio: 3.0,
+           before_days: 1, after_days: 1, after_calls: 500, verdict: "REGRESSED"}
+
+  - name: test_plan_regression_pending_no_after
+    model: mart_plan_regression
+    description: >
+      뒤집힘 후 관측이 아직 없으면(after_days=0) 지어내지 않고 PENDING — 매일 재계산되며
+      후 N일이 차면 자연 확정된다. 전역 기본 임계(seed 없음)로도 동작.
+    given:
+      - input: ref('stg_plan_snapshot')
+        rows:
+          - {instance_id: 2, query_id: "q2", plan_hash: "A", captured_at: "2026-01-09 12:00:00", dt: "2026-01-09"}
+          - {instance_id: 2, query_id: "q2", plan_hash: "B", captured_at: "2026-01-10 12:00:00", dt: "2026-01-10"}
+      - input: ref('fct_query_daily')
+        rows:
+          - {instance_id: 2, query_id: "q2", dt: "2026-01-09", avg_latency_ms: 10.0, delta_calls: 500}
+      - input: ref('plan_regression_thresholds')
+        rows: []
+    expect:
+      rows:
+        - {instance_id: 2, query_id: "q2", flip_dt: "2026-01-10",
+           before_days: 1, after_days: 0, verdict: "PENDING"}
+
+  - name: test_plan_regression_ambiguous_adjacent_flip
+    model: mart_plan_regression
+    description: >
+      같은 쿼리가 비교창(±N일) 안에서 또 뒤집히면(A→B→C, 2일 간격) 전/후가 다른 뒤집힘에
+      오염되므로 판정을 지어내지 않고 AMBIGUOUS. 관측은 충분(PENDING 아님)해야 이 분기로 온다.
+    given:
+      - input: ref('stg_plan_snapshot')
+        rows:
+          - {instance_id: 3, query_id: "q3", plan_hash: "A", captured_at: "2026-01-09 12:00:00", dt: "2026-01-09"}
+          - {instance_id: 3, query_id: "q3", plan_hash: "B", captured_at: "2026-01-10 12:00:00", dt: "2026-01-10"}
+          - {instance_id: 3, query_id: "q3", plan_hash: "C", captured_at: "2026-01-12 12:00:00", dt: "2026-01-12"}
+      - input: ref('fct_query_daily')
+        rows:
+          - {instance_id: 3, query_id: "q3", dt: "2026-01-09", avg_latency_ms: 10.0, delta_calls: 500}
+          - {instance_id: 3, query_id: "q3", dt: "2026-01-11", avg_latency_ms: 12.0, delta_calls: 500}
+          - {instance_id: 3, query_id: "q3", dt: "2026-01-13", avg_latency_ms: 12.0, delta_calls: 500}
+      - input: ref('plan_regression_thresholds')
+        rows: []
+    expect:
+      rows:
+        - {instance_id: 3, query_id: "q3", flip_dt: "2026-01-10", verdict: "AMBIGUOUS"}
+        - {instance_id: 3, query_id: "q3", flip_dt: "2026-01-12", verdict: "AMBIGUOUS"}
+
+  # --- Phase 16 (G4) — 백업 공백(RPO) 판정 ---
+  - name: test_backup_rpo_ok_breach_missing
+    model: mart_backup_rpo
+    description: >
+      기준일=창고 max dt(01-10, fct_query_daily에서). inst1 최근 성공(gap 1, 임계 3)→ok,
+      inst2 오래된 성공(gap 9)→breach, inst3 실패만 있고 성공 관측 없음→no_backup_observed.
+      유니버스를 query 팩트에서 잡아 백업 기록 부재도 행으로 드러나는 것(left join)을 못박는다.
+    given:
+      - input: ref('fct_query_daily')
+        rows:
+          - {instance_id: 1, dt: "2026-01-10"}
+          - {instance_id: 2, dt: "2026-01-10"}
+          - {instance_id: 3, dt: "2026-01-10"}
+      - input: ref('fct_backup_daily')
+        rows:
+          - {instance_id: 1, dt: "2026-01-09", success_runs: 1, verified_runs: 1}
+          - {instance_id: 2, dt: "2026-01-01", success_runs: 1, verified_runs: 0}
+          - {instance_id: 3, dt: "2026-01-05", success_runs: 0, verified_runs: 0}
+      - input: ref('backup_rpo_thresholds')
+        rows: []
+    expect:
+      rows:
+        - {instance_id: 1, as_of_dt: "2026-01-10", last_success_dt: "2026-01-09", gap_days: 1,
+           no_successful_backup: false, rpo_status: "ok"}
+        - {instance_id: 2, as_of_dt: "2026-01-10", last_success_dt: "2026-01-01", gap_days: 9,
+           no_successful_backup: false, rpo_status: "breach"}
+        - {instance_id: 3, as_of_dt: "2026-01-10", last_success_dt: null, gap_days: null,
+           no_successful_backup: true, rpo_status: "no_backup_observed"}

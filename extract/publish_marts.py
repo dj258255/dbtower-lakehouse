@@ -32,6 +32,7 @@ log = logging.getLogger("publish_marts")
 
 # 발행 대상 마트(= dbt marts 디렉터리의 테이블 materialization 전부).
 # Phase 14: fct_query_hourly(D5)·mart_baseline_longterm(D6) 편입 — 후자는 되쓰기(D7) 화물.
+# Phase 16: 판정 3종(플랜 회귀·백업 공백·주간 보고) 편입 — 서빙(Metabase·MCP) 계층이 소비.
 MART_TABLES = (
     "fct_query_daily",
     "mart_query_regression",
@@ -43,6 +44,9 @@ MART_TABLES = (
     "fct_backup_daily",
     "fct_plan_change_daily",
     "mart_wait_top",
+    "mart_plan_regression",
+    "mart_backup_rpo",
+    "mart_weekly_ops_report",
 )
 
 # dbt가 마트를 짓는 DuckDB 파일. 컨테이너에선 compose가 절대경로로 덮어쓴다.

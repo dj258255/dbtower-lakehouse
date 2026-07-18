@@ -43,10 +43,28 @@ exposures:
     description: >
       에이전트가 Metabase API 경유로 장기 마트를 SELECT 질의·카드화한다(그쪽 103절).
       도구 설명에 실재 스키마가 박혀 있어, 아래 마트들의 컬럼 개명은 도구 설명 동기화 필요.
+      16단계 판정 3종(플랜 회귀·백업 공백·주간 보고) 편입 — G7.
     depends_on:
       - ref('mart_query_regression')
       - ref('mart_capacity_forecast')
       - ref('mart_wait_top')
       - ref('fct_backup_daily')
       - ref('fct_plan_change_daily')
+      - ref('mart_plan_regression')
+      - ref('mart_backup_rpo')
+      - ref('mart_weekly_ops_report')
+    owner: {name: "beomsu"}
+
+  - name: metabase_weekly_ops_dashboard
+    label: "Metabase 주간 운영 보고 대시보드 (16단계 G6)"
+    type: dashboard
+    maturity: high
+    url: http://localhost:13001
+    description: >
+      주간 운영 보고 1장 + 플랜 회귀 목록(verdict=REGRESSED) + 백업 공백 목록(rpo_status=breach).
+      metabase_bootstrap.py 패턴으로 구축. 이메일 구독은 SMTP 전제라 RUNBOOK에 설정 절차만.
+    depends_on:
+      - ref('mart_weekly_ops_report')
+      - ref('mart_plan_regression')
+      - ref('mart_backup_rpo')
     owner: {name: "beomsu"}

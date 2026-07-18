@@ -254,3 +254,120 @@ models:
     columns:
       - {name: instance_id, tests: [not_null]}
       - {name: event_name, tests: [not_null]}
+
+  # --- 16단계 — 판정의 마지막 마일(플랜 회귀·백업 공백·주간 보고) ---
+  # 앞 둘은 DBTower MCP(lakehouse_query, G7)가 소비하는 스키마라 계약을 건다 — 도구 설명에
+  # 박힌 컬럼과 어긋나면 빌드에서 막혀야 한다. 주간 보고는 서빙 편의 마트라 테스트만(과계약 지양).
+  - name: mart_plan_regression
+    description: >
+      플랜 뒤집힘 전후 지연 비교로 회귀를 판정(16단계 G1~G3). 일 단위 대표 플랜의 lag로
+      뒤집힘을 잡고, fct_query_daily 지연을 전 N일 vs 후 N일 비교해 verdict를 낸다.
+      verdict: REGRESSED/IMPROVED/NEUTRAL/PENDING(관측 미도래)/AMBIGUOUS(비교창 오염).
+      발화는 안 한다(소비 = Metabase pull / DBTower push). 볼륨 성장 회귀는 이 마트가
+      아니라 mart_query_regression의 관심사 — 원인 축이 다르다.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: instance_id
+        data_type: bigint
+        constraints: [{type: not_null}]
+        tests: [not_null]
+      - name: query_id
+        data_type: varchar
+        constraints: [{type: not_null}]
+        tests: [not_null]
+      - name: flip_dt
+        data_type: date
+        description: "대표 플랜이 직전과 달라진 첫 dt(뒤집힘일)."
+        constraints: [{type: not_null}]
+      - name: prev_plan_hash
+        data_type: varchar
+        description: "뒤집히기 전 대표 플랜 해시."
+      - name: new_plan_hash
+        data_type: varchar
+        description: "뒤집힌 뒤 대표 플랜 해시."
+      - name: before_avg_ms
+        data_type: double
+        description: "뒤집힘 전 N일 평균 지연(NULL 제외 평균). 관측 없으면 NULL."
+      - name: after_avg_ms
+        data_type: double
+        description: "뒤집힘 후 N일 평균 지연. 뒤집힘 당일은 전/후 섞여 양쪽 제외."
+      - name: latency_ratio
+        data_type: double
+        description: "after/before 비율(소수 2자리 고정 — 판정 재현성). >=임계면 REGRESSED."
+      - name: before_days
+        data_type: bigint
+        description: "전 창에서 지연이 관측된 dt 수."
+      - name: after_days
+        data_type: bigint
+        description: "후 창에서 지연이 관측된 dt 수. 0이면 PENDING."
+      - name: after_calls
+        data_type: hugeint
+        description: "후 창 호출수 합. 임계 미만이면 저호출 노이즈로 NEUTRAL."
+      - name: verdict
+        data_type: varchar
+        description: "REGRESSED | IMPROVED | NEUTRAL | PENDING | AMBIGUOUS."
+        constraints: [{type: not_null}]
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["REGRESSED", "IMPROVED", "NEUTRAL", "PENDING", "AMBIGUOUS"]
+      - name: computed_at
+        data_type: timestamp with time zone
+
+  - name: mart_backup_rpo
+    description: >
+      인스턴스별 백업 공백(RPO) 판정(16단계 G4). 유니버스=fct_query_daily distinct instance(전
+      기종 공통), 기준일=창고 max dt(벽시계 아님). last_success_dt 이후 경과일이 임계 초과면
+      breach, 성공 백업 관측이 아예 없으면 no_backup_observed(기종 미수집 가능성 포함 — 창고엔
+      기종 축이 없어 단정 안 함). 발화는 안 한다.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: instance_id
+        data_type: bigint
+        constraints: [{type: not_null}]
+        tests: [not_null]
+      - name: as_of_dt
+        data_type: date
+        description: "판정 기준일 = 창고 최신 dt."
+        constraints: [{type: not_null}]
+      - name: last_success_dt
+        data_type: date
+        description: "마지막 성공 백업 dt. 없으면 NULL."
+      - name: last_verified_dt
+        data_type: date
+        description: "마지막 검증(VERIFIED) 백업 dt."
+      - name: gap_days
+        data_type: bigint
+        description: "as_of_dt - last_success_dt(일). 성공 백업 없으면 NULL."
+      - name: no_successful_backup
+        data_type: boolean
+        description: "성공 백업 관측이 하나도 없으면 true."
+        constraints: [{type: not_null}]
+      - name: max_gap_days
+        data_type: bigint
+        description: "적용된 허용 한계(seed override 없으면 var 기본)."
+      - name: rpo_status
+        data_type: varchar
+        description: "ok | breach | no_backup_observed."
+        constraints: [{type: not_null}]
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["ok", "breach", "no_backup_observed"]
+      - name: computed_at
+        data_type: timestamp with time zone
+
+  - name: mart_weekly_ops_report
+    description: >
+      주간 운영 보고(16단계 G5) — 인스턴스당 한 행에 용량 D-day·top 대기·플랜 뒤집힘·백업
+      공백을 접는다. 용량/대기/백업은 현재 스냅샷, 플랜 뒤집힘은 이번 주 집계. 이력 한 주 미만은
+      is_partial_week=true. 서빙 편의 마트(계약 미부여, 테스트만).
+    columns:
+      - {name: week_start, tests: [not_null]}
+      - {name: instance_id, tests: [not_null]}
