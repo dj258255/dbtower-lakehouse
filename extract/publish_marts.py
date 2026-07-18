@@ -34,6 +34,7 @@ log = logging.getLogger("publish_marts")
 # Phase 14: fct_query_hourly(D5)·mart_baseline_longterm(D6) 편입 — 후자는 되쓰기(D7) 화물.
 # Phase 16: 판정 3종(플랜 회귀·백업 공백·주간 보고) 편입 — 서빙(Metabase·MCP) 계층이 소비.
 # Phase 17: 미사용 인덱스 판정(fct_index_daily·mart_index_verdict) 편입.
+# Phase 18: 설정 드리프트(fct_config_change_daily·mart_config_change·mart_config_impact) 편입.
 MART_TABLES = (
     "fct_query_daily",
     "mart_query_regression",
@@ -50,6 +51,9 @@ MART_TABLES = (
     "mart_weekly_ops_report",
     "fct_index_daily",
     "mart_index_verdict",
+    "fct_config_change_daily",
+    "mart_config_change",
+    "mart_config_impact",
 )
 
 # dbt가 마트를 짓는 DuckDB 파일. 컨테이너에선 compose가 절대경로로 덮어쓴다.

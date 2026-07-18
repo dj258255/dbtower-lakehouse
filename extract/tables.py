@@ -263,10 +263,74 @@ _INDEX_USAGE_SNAPSHOT = TableSpec(
     },
 )
 
+# 설정 드리프트 — "언제부터 무엇이 바뀌었나"의 장기 이력(18단계, DBTower V27 편입).
+# 두 append-only 테이블만 내린다: config_snapshot(매 수집 1행, 무변경도 해시로 증명)와
+# config_param_change(바뀐 파라미터만 append). config_current_param은 '현재 전량 거울'이라
+# upsert/delete로 변이 → 오프로드 대상 아님(불변 append만 내린다는 계약 위반).
+# 저빈도·이벤트성(대부분 사이클이 무변경): completeness(전 인스턴스 변경분 present)와
+# freshness(연속 수집 경계) 전제가 안 맞아 끈다 — plan/backup과 같은 결. 정합·드리프트만.
+# 정직 한계: "누가" 바꿨는지는 대상 DB가 안 줘서 원천에 없다 → 마트도 "언제·무엇이"까지.
+_CONFIG_SNAPSHOT = TableSpec(
+    name="config_snapshot",
+    select_columns=(
+        "id", "instance_id", "captured_at", "param_hash", "change_count", "baseline",
+    ),
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("param_hash", pa.string(), nullable=False),
+        pa.field("change_count", pa.int32(), nullable=False),
+        pa.field("baseline", pa.bool_(), nullable=False),
+    ]),
+    watermark_col="captured_at",
+    raw_prefix="raw/config_snapshot",
+    gate=GateProfile(completeness=False, freshness=False),
+    expected_pg_columns={
+        "id": "bigint",
+        "instance_id": "bigint",
+        "captured_at": "timestamp without time zone",
+        "param_hash": "character varying",
+        "change_count": "integer",
+        "baseline": "boolean",
+    },
+)
+
+_CONFIG_PARAM_CHANGE = TableSpec(
+    name="config_param_change",
+    select_columns=(
+        "id", "snapshot_id", "instance_id", "captured_at",
+        "param_name", "old_value", "new_value", "change_kind",
+    ),
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("snapshot_id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("param_name", pa.string(), nullable=False),
+        pa.field("old_value", pa.string(), nullable=True),
+        pa.field("new_value", pa.string(), nullable=True),
+        pa.field("change_kind", pa.string(), nullable=False),
+    ]),
+    watermark_col="captured_at",
+    raw_prefix="raw/config_param_change",
+    gate=GateProfile(completeness=False, freshness=False),
+    expected_pg_columns={
+        "id": "bigint",
+        "snapshot_id": "bigint",
+        "instance_id": "bigint",
+        "captured_at": "timestamp without time zone",
+        "param_name": "character varying",
+        "old_value": "text",
+        "new_value": "text",
+        "change_kind": "character varying",
+    },
+)
+
 REGISTRY: dict[str, TableSpec] = {
     s.name: s
     for s in (_QUERY_SNAPSHOT, _BACKUP_RUN, _PLAN_SNAPSHOT, _WAIT_EVENT_SNAPSHOT, _SIZE_SNAPSHOT,
-              _INDEX_USAGE_SNAPSHOT)
+              _INDEX_USAGE_SNAPSHOT, _CONFIG_SNAPSHOT, _CONFIG_PARAM_CHANGE)
 }
 
 # 주 파이프라인(게이트 4축·dbt·publish·heartbeat)이 도는 테이블.

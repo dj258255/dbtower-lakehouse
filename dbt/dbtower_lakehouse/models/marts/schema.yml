@@ -372,6 +372,34 @@ models:
       - {name: week_start, tests: [not_null]}
       - {name: instance_id, tests: [not_null]}
 
+  # --- 18단계 — 설정 드리프트 장기 이력·상관 ---
+  - name: fct_config_change_daily
+    description: "일별 설정 변경 팩트(18단계) — 인스턴스·dt별 변경 이벤트 수·바뀐 파라미터 수."
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: dt, tests: [not_null]}
+  - name: mart_config_change
+    description: >
+      설정 변경 타임라인(18단계) — 최근 90일 "언제 무엇이 어떻게 바뀌었나"의 서빙. DBTower가
+      7일류로 지우는 이벤트를 장기 보관. "누가"는 원천에 없어 미포함(정직 한계).
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: change_kind, tests: [not_null]}
+  - name: mart_config_impact
+    description: >
+      설정 변경 영향 상관(18단계) — 변경 뒤 N일(기본 7) 내 플랜 뒤집힘/회귀 관측 여부.
+      correlation: followed_by_regression/followed_by_plan_flip/no_flip_observed. 상관이지 인과
+      아님(조언 어휘). 장기 설정+성능 이력이 같은 창고에 있어야 가능 — DBTower 7일은 못 한다.
+    columns:
+      - name: instance_id
+        tests: [not_null]
+      - name: correlation
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["followed_by_regression", "followed_by_plan_flip", "no_flip_observed"]
+
   - name: fct_index_daily
     description: >
       일별 인덱스 사용 팩트(17단계). scan_count 누적을 first-vs-last로 접어 하루 실사용

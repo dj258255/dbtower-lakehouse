@@ -238,7 +238,29 @@ def build_aux_fixtures(base_dir: str) -> None:
         pa.array(["orders", "orders"], pa.string()), pa.array(["idx_a", "idx_a"], pa.string()),
         pa.array([100, 340], pa.int64()), pa.array([4096, 4096], pa.int64()),
         pa.array([False, False], pa.bool_())], "2026-01-01", 1)
-    print(f"aux 픽스처 4종 생성 → {base_dir}_wait/_backup/_plan/_index")
+    # 설정 드리프트(18단계) — config_snapshot: inst1 기준선+무변경, config_param_change: work_mem 변경.
+    # 변경(01-01)이 plan 픽스처의 뒤집힘(01-02, inst1)과 겹쳐 mart_config_impact가 상관을 잡는다.
+    cfg_snap_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("param_hash", pa.string(), nullable=False),
+        pa.field("change_count", pa.int32(), nullable=False), pa.field("baseline", pa.bool_(), nullable=False)])
+    write(base_dir + "_config_snap", cfg_snap_schema, [
+        pa.array([1, 2], pa.int64()), pa.array([1, 1], pa.int64()),
+        pa.array([ts("2026-01-01 00:00:00"), ts("2026-01-01 01:00:00")], pa.timestamp("us")),
+        pa.array(["hA", "hB"], pa.string()), pa.array([0, 1], pa.int32()),
+        pa.array([True, False], pa.bool_())], "2026-01-01", 1)
+    cfg_chg_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("snapshot_id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False), pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("param_name", pa.string(), nullable=False), pa.field("old_value", pa.string(), nullable=True),
+        pa.field("new_value", pa.string(), nullable=True), pa.field("change_kind", pa.string(), nullable=False)])
+    write(base_dir + "_config_change", cfg_chg_schema, [
+        pa.array([1], pa.int64()), pa.array([2], pa.int64()), pa.array([1], pa.int64()),
+        pa.array([ts("2026-01-01 01:00:00")], pa.timestamp("us")),
+        pa.array(["work_mem"], pa.string()), pa.array(["4MB"], pa.string()),
+        pa.array(["1MB"], pa.string()), pa.array(["CHANGED"], pa.string())], "2026-01-01", 1)
+    print(f"aux 픽스처 6종 생성 → {base_dir}_wait/_backup/_plan/_index/_config_snap/_config_change")
 
 
 def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: str) -> None:
@@ -264,7 +286,8 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
         )
         base = fixture_dir  # aux 픽스처는 base_dir 접미 규약(_wait/_backup/_plan)
         for tbl, suffix in (("wait_event_snapshot", "_wait"), ("backup_run", "_backup"),
-                            ("plan_snapshot", "_plan"), ("index_usage_snapshot", "_index")):
+                            ("plan_snapshot", "_plan"), ("index_usage_snapshot", "_index"),
+                            ("config_snapshot", "_config_snap"), ("config_param_change", "_config_change")):
             con.execute(
                 f"CREATE OR REPLACE VIEW raw.{tbl} AS "
                 f"SELECT * FROM read_parquet('{base}{suffix}/dt=*/instance_id=*/*.parquet', "
@@ -272,7 +295,7 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
             )
     finally:
         con.close()
-    print(f"raw 소스 6종 뷰 등록 → {duckdb_file}")
+    print(f"raw 소스 8종 뷰 등록 → {duckdb_file}")
 
 
 if __name__ == "__main__":

@@ -155,3 +155,37 @@ sources:
           - {name: size_bytes, data_type: bigint}
           - {name: is_unique, data_type: boolean}
           - {name: dt, data_type: varchar}
+      - name: config_snapshot
+        description: >
+          설정 드리프트 매 수집 흔적(18단계, DBTower V27). 무변경도 1행(param_hash로 "그 시각
+          설정은 이랬다" 증명). change_count=직전 대비 변경 수, baseline=첫 수집(경보 억제 근거).
+        meta:
+          external_location: >-
+            {{ env_var('RAW_CONFIG_SNAPSHOT_LOCATION',
+               "read_parquet('s3://lakehouse/raw/config_snapshot/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: captured_at, data_type: timestamp}
+          - {name: param_hash, data_type: varchar}
+          - {name: change_count, data_type: integer}
+          - {name: baseline, data_type: boolean}
+          - {name: dt, data_type: varchar}
+      - name: config_param_change
+        description: >
+          설정 파라미터 변경 이벤트(append-only, 18단계). 바뀐 파라미터만. old/new_value·
+          change_kind(CHANGED/ADDED/REMOVED). "누가"는 대상 DB가 안 줘 없다 — "언제·무엇이"까지.
+        meta:
+          external_location: >-
+            {{ env_var('RAW_CONFIG_PARAM_CHANGE_LOCATION',
+               "read_parquet('s3://lakehouse/raw/config_param_change/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: snapshot_id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: captured_at, data_type: timestamp}
+          - {name: param_name, data_type: varchar}
+          - {name: old_value, data_type: varchar}
+          - {name: new_value, data_type: varchar}
+          - {name: change_kind, data_type: varchar}
+          - {name: dt, data_type: varchar}
