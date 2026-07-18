@@ -385,20 +385,30 @@ models:
     columns:
       - {name: instance_id, tests: [not_null]}
       - {name: change_kind, tests: [not_null]}
+  - name: int_change_events
+    description: >
+      변경 이벤트 통합 스트림(19단계) — "무엇을 바꿨든" 한 형태로. 지금은 config, 스키마 변경
+      (change_review)은 자리만. change_source가 축을 구분한다. mart_config_impact의 상관 재료.
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: change_source, tests: [not_null]}
   - name: mart_config_impact
     description: >
-      설정 변경 영향 상관(18단계) — 변경 뒤 N일(기본 7) 내 플랜 뒤집힘/회귀 관측 여부.
-      correlation: followed_by_regression/followed_by_plan_flip/no_flip_observed. 상관이지 인과
-      아님(조언 어휘). 장기 설정+성능 이력이 같은 창고에 있어야 가능 — DBTower 7일은 못 한다.
+      변경 영향 상관(18단계 신설·19단계 축 확장) — 변경 뒤 N일(기본 7) 내 (a)플랜 뒤집힘/회귀,
+      (b)평균 지연 상승을 상관. correlation: followed_by_regression/followed_by_plan_flip/
+      followed_by_latency_rise/no_signal(우선순위 순). 상관이지 인과 아님(조언 어휘). 변경 소스는
+      int_change_events로 일반화(config + 향후 schema). 장기 변경+성능 이력이 같은 창고라야 가능.
     columns:
       - name: instance_id
+        tests: [not_null]
+      - name: change_source
         tests: [not_null]
       - name: correlation
         tests:
           - not_null
           - accepted_values:
               arguments:
-                values: ["followed_by_regression", "followed_by_plan_flip", "no_flip_observed"]
+                values: ["followed_by_regression", "followed_by_plan_flip", "followed_by_latency_rise", "no_signal"]
 
   - name: fct_index_daily
     description: >

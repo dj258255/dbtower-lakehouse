@@ -327,26 +327,46 @@ unit_tests:
         - {instance_id: 1, table_name: "t", index_name: "idx_new",  total_scans: 0,   observation_days: 0,  is_unique: false, verdict: "insufficient_observation"}
         - {instance_id: 1, table_name: "t", index_name: "idx_dead", total_scans: 0,   observation_days: 76, is_unique: false, verdict: "candidate_unused"}
 
-  # --- Phase 18 — 설정 변경 영향 상관 ---
-  - name: test_config_impact_regression_follows
+  # --- Phase 18 신설·19 확장 — 변경 영향 상관(플랜 뒤집힘 + 지연 상승 두 축) ---
+  - name: test_change_impact_regression_follows
     model: mart_config_impact
     description: >
-      work_mem 축소(01-10) 뒤 N일(기본 7) 안에 같은 인스턴스에서 REGRESSED 뒤집힘(01-12)이
-      관측되면 followed_by_regression. 창 밖(01-20) 뒤집힘은 안 센다. 변경만 있고 뒤집힘 없는
-      인스턴스는 no_flip_observed. 상관 판정 산식을 기지 입력으로 고정한다.
+      변경(01-10) 뒤 N일(기본 7) 안에 같은 인스턴스에서 REGRESSED 뒤집힘(01-12)이 관측되면
+      followed_by_regression. 창 밖(01-20)은 안 센다. 신호 전무면 no_signal. 소스는 통합
+      스트림(int_change_events), 지연 없어도(fct_query_daily 빈 입력) 플랜 축으로 판정.
     given:
-      - input: ref('stg_config_param_change')
+      - input: ref('int_change_events')
         rows:
-          - {instance_id: 1, dt: "2026-01-10", param_name: "work_mem", old_value: "4MB", new_value: "1MB", change_kind: "CHANGED"}
-          - {instance_id: 2, dt: "2026-01-10", param_name: "max_connections", old_value: "100", new_value: "200", change_kind: "CHANGED"}
+          - {instance_id: 1, change_dt: "2026-01-10", change_source: "config", change_key: "work_mem", old_value: "4MB", new_value: "1MB", change_kind: "CHANGED"}
+          - {instance_id: 2, change_dt: "2026-01-10", change_source: "config", change_key: "max_connections", old_value: "100", new_value: "200", change_kind: "CHANGED"}
       - input: ref('mart_plan_regression')
         rows:
-          # inst1: 변경(01-10) +2일 REGRESSED → followed_by_regression
           - {instance_id: 1, flip_dt: "2026-01-12", verdict: "REGRESSED"}
-          # inst1: 창 밖(+10일) — 안 셈
           - {instance_id: 1, flip_dt: "2026-01-20", verdict: "REGRESSED"}
-          # inst2: 뒤집힘 없음 → no_flip_observed
+      - input: ref('fct_query_daily')
+        rows: []
     expect:
       rows:
-        - {instance_id: 1, change_dt: "2026-01-10", param_name: "work_mem", plan_flips_after: 1, regressed_after: 1, correlation: "followed_by_regression"}
-        - {instance_id: 2, change_dt: "2026-01-10", param_name: "max_connections", plan_flips_after: 0, regressed_after: 0, correlation: "no_flip_observed"}
+        - {instance_id: 1, change_dt: "2026-01-10", change_key: "work_mem", plan_flips_after: 1, regressed_after: 1, correlation: "followed_by_regression"}
+        - {instance_id: 2, change_dt: "2026-01-10", change_key: "max_connections", plan_flips_after: 0, regressed_after: 0, correlation: "no_signal"}
+
+  - name: test_change_impact_latency_rise
+    model: mart_config_impact
+    description: >
+      플랜이 안 뒤집혀도(뒤집힘 입력 없음) 변경 전후 평균 지연이 임계(기본 1.3배) 이상 오르면
+      followed_by_latency_rise. 19단계 축 확장 — 플랜 이력이 얕아도 켜지는 지연 축을 고정.
+      전 10ms(01-09) → 후 20ms(01-11), 비율 2.0.
+    given:
+      - input: ref('int_change_events')
+        rows:
+          - {instance_id: 3, change_dt: "2026-01-10", change_source: "config", change_key: "shared_buffers", old_value: "128MB", new_value: "64MB", change_kind: "CHANGED"}
+      - input: ref('mart_plan_regression')
+        rows: []
+      - input: ref('fct_query_daily')
+        rows:
+          - {instance_id: 3, dt: "2026-01-09", avg_latency_ms: 10.0}
+          - {instance_id: 3, dt: "2026-01-11", avg_latency_ms: 20.0}
+    expect:
+      rows:
+        - {instance_id: 3, change_dt: "2026-01-10", change_key: "shared_buffers", plan_flips_after: 0, regressed_after: 0,
+           before_latency_ms: 10.0, after_latency_ms: 20.0, latency_ratio: 2.0, correlation: "followed_by_latency_rise"}

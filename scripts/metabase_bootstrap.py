@@ -359,13 +359,16 @@ CONFIG_IMPACT_SQL = """\
 select
     instance_id,
     change_dt,
-    param_name,
+    change_source,
+    change_key,
     new_value,
     plan_flips_after,
-    regressed_after,
+    before_latency_ms,
+    after_latency_ms,
+    latency_ratio,
     correlation
 from mart_config_impact
-order by regressed_after desc, plan_flips_after desc, change_dt desc\
+order by regressed_after desc, plan_flips_after desc, latency_ratio desc nulls last, change_dt desc\
 """
 
 CONFIG_DAILY_SQL = """\

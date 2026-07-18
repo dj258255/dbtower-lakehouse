@@ -10,6 +10,14 @@
 --   (2) 관측 기간이 창 하한 미만이면 insufficient_observation — 0회를 미사용으로 단정하지 않는다.
 --   (3) 레플리카 전용 사용은 프라이머리 통계만 수집해 오판 가능 — note에 한계 명시.
 -- 창 앵커는 데이터의 최신 dt(current_date 아님) — 라이브·픽스처 양쪽에서 재현되게.
+--
+-- 지평 경계(용량 D-day와 같은 분업 — 어느 쪽을 믿나): DBTower의 UnusedIndexAnalyzer(FinOps,
+-- 라이브)는 "지금 이 순간 scanCount=0"인 순간 판정이라 **방금 재기동한 서버의 0회도 미사용처럼
+-- 보인다**(그래서 그쪽도 "서버 가동 기간을 함께 보라"고 권고에 명시). 이 마트는 그 약점을 메운다:
+-- 90일 창 안의 일별 실사용을 합산하므로 재기동 노이즈에 안 흔들리고, 관측 부족은
+-- insufficient_observation으로 분리한다. **단기·즉답이 필요하면 DBTower 라이브, "분기 내내 정말
+-- 안 쓰였나"의 확정은 이 장기 마트.** 둘은 경쟁이 아니라 지평이 갈린 상호보완이다(원천은 같은
+-- indexUsage 통계, 창만 다르다).
 {{ config(materialized="table") }}
 
 {% set window_days = var('index_verdict_window_days', 90) %}

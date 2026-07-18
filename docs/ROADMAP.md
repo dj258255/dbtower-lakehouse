@@ -1110,6 +1110,16 @@ Metabase(pull) 또는 DBTower(push)의 몫** — 두 번째 알림 시스템을 
 table_io_waits_summary_by_index_usage / Mongo $indexStats), Oracle은 UNSUPPORTED 정직
 (MONITORING USAGE 침습·AWR 라이선스). 값 의미는 "재시작 이후 누적".
 
+**지평 경계 — DBTower 라이브 판정과 겹치지 않는다 (2026-07-18 명문화)**: DBTower에는 이미
+`UnusedIndexAnalyzer`(FinOps, D6)가 있어 "지금 scanCount=0"인 미사용 후보를 **라이브**로 낸다.
+그런데 순간 관측이라 방금 재기동한 서버의 0회도 미사용처럼 보이는 약점이 있고, 그쪽도 "서버
+가동 기간을 함께 보라"고 권고에 적는다. `mart_index_verdict`는 그 약점을 메운다 — 90일 창의
+일별 실사용 합이라 재기동 노이즈에 안 흔들리고, 관측 부족은 `insufficient_observation`으로
+분리한다. **분업은 용량 D-day와 같은 결이다: 단기·즉답은 DBTower 라이브, "분기 내내 정말 안
+쓰였나"의 확정은 이 장기 마트.** 원천(indexUsage 통계)은 같고 창(라이브 vs 90일)만 다르다 —
+경쟁이 아니라 지평이 갈린 상호보완. 셀프호스터는 "지워도 되나"를 확정할 때 이 마트를,
+"지금 당장 훑어보기"는 DBTower 화면을 본다.
+
 | ID | 항목 | 내용 | 검증 기준 |
 |---|---|---|---|
 | X1 | 레지스트리 편입 | 테이블 스펙 레지스트리에 `index_usage_snapshot` 추가 — 워터마크 captured_at, 게이트 프로필은 wait_event와 동형(행 없음이 정상일 수 있는 축은 SKIP) | 첫 offload 멱등·게이트 통과 |
@@ -1180,6 +1190,41 @@ max 서브쿼리 조합에서 DuckDB 내부오류. 명시 컬럼 + anchor CTE(da
 > 나머지 0 = 무변경 vs 미수집 구분 실증), `mart_config_impact` 4행(플랜 이력 얕아 no_flip_observed —
 > 정직). CI 픽스처엔 변경↔뒤집힘 겹침을 심어 **followed_by_plan_flip** 산출 확인. Metabase "설정
 > 드리프트" 대시보드 실화면. 상관의 실데이터 개화는 **시간 해제**(플랜 이력 축적).
+
+---
+
+## 19단계 — 상관의 일반화와 지평 경계 정리 (구현 완료 — 2026-07-18, VERIFICATION 19절)
+
+**상황 가정**: 18단계의 `mart_config_impact`는 설정 변경을 **플랜 뒤집힘 하나**와만 겹쳤다.
+그런데 플랜 이력이 얕으면 상관이 안 켜진다. 그리고 원인의 축은 여럿이다 — 파라미터 변경이
+꼭 플랜을 뒤집지 않아도 그냥 느려질 수 있고, 바뀌는 대상도 파라미터만이 아니라 스키마(DDL)일
+수 있다. 한 소스·한 축에 묶인 상관은 반쪽이다.
+
+**판단(과설계 경계 — 사용자와 확정)**: change_review(스키마 변경, DBTower V28) 전체 오프로드
+아크는 **짊어지지 않는다.** 리뷰는 저빈도 감사 데이터라 "버려지는 데이터의 두 번째 삶" 전제가
+약하고, 상관 신호도 성기다. 대신 **상관을 일반화**해 소스가 늘면 끼우기만 하면 되게 자리를
+열어 둔다. 지금 값이 확실한 두 가지만 한다: (1) 변경 소스 통합, (2) 지연 축 추가.
+
+- **E1 변경 이벤트 통합**: `int_change_events`(view) — 변경을 `(instance_id, change_dt,
+  change_source, change_key, change_kind, old/new_value)` 한 형태로 모은다. 지금은 config만,
+  **스키마 변경(change_review)은 union all 자리를 코드 주석으로 열어 둠**(편입 시 저빈도
+  사후변이라 backup_run식 D+1 계약 필요 — 그때 레지스트리+stg 추가). 주석 안 `ref()`는
+  dbt가 의존으로 파싱하니 일부러 안 씀.
+- **E2 지연 축**: `mart_config_impact`를 int_change_events 위에서 재계산 + **변경 전후 평균
+  지연**(fct_query_daily)을 더한다. correlation을 우선순위로 확장: followed_by_regression >
+  followed_by_plan_flip > **followed_by_latency_rise** > no_signal. 플랜이 안 뒤집혀도 "변경
+  뒤 느려졌다"를 잡는다. 지연 NULL은 avg 자연 제외(0으로 안 접음).
+- **E3 지평 경계 문서**: DBTower `UnusedIndexAnalyzer`(라이브 순간 판정)와 lakehouse
+  `mart_index_verdict`(90일 창)가 둘 다 "미사용 인덱스"를 판정 → 어느 걸 믿나. 용량 D-day식
+  분업(단기=DBTower / 확정=장기 마트)을 mart 헤더·ROADMAP 17단계·이 절에 명문화. 원천은 같고
+  창만 다른 상호보완이지 경쟁 아님.
+
+> 실행 기록(2026-07-18 — VERIFICATION 19절): **E1~E3 완료.** unit test 2종(regression follows·
+> latency rise), accepted_values(correlation 4값), 로컬 dbt build **PASS=111**·pytest 57 그린.
+> **실데이터**: mart_config_impact가 change_source·before_latency_ms(inst2 3.1ms·inst4 35.04ms
+> 실측)까지 채움. after_latency는 변경이 당일(07-18)이라 미래 창이 비어 no_signal(정직 — 후 N일이
+> 지나면 켜짐, 시간 해제). MCP 도구 설명에 config 마트 2종 편입(stage 18 누락분). Metabase 카드
+> 갱신. change_review는 **미착수(자리만)** — 필요해지면 int_change_events에 소스 하나로 붙는다.
 
 ---
 
