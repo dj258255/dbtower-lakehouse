@@ -56,6 +56,16 @@ trend as (
     from windowed
     group by instance_id
 
+),
+
+rounded as (
+
+    -- 기울기를 표시 정밀도(소수 2자리)로 고정한 뒤 잔여일·판정도 같은 값으로 계산한다.
+    -- regr_slope 원시값은 플랫폼(라이브러리 빌드)마다 최하위 비트가 흔들려 floor 경계에서
+    -- 잔여일이 1일 오락가락한다(CI 실측: 맥 81 vs 러너 80). 표시값과 계산값을 일치시키면
+    -- 결정적이고, 사용자 관점에서도 "보이는 기울기로 계산된 D-day"가 된다.
+    select *, round(slope_bytes_per_day, 2) as slope_r from trend
+
 )
 
 select
@@ -65,7 +75,7 @@ select
     -- 관측 부족이면 추세를 지어내지 않는다 — D1 베이스라인·D6 마트와 같은 "학습 중" 정직 패턴.
     t.days_observed < {{ var('capacity_min_days', 14) }}          as learning,
     t.current_bytes,
-    round(t.slope_bytes_per_day, 2)                                as slope_bytes_per_day,
+    t.slope_r                                                      as slope_bytes_per_day,
     round(t.trend_r2, 4)                                           as trend_r2,
     coalesce(th.threshold_bytes, vl.volume_threshold_bytes)        as threshold_bytes,
     case
@@ -77,21 +87,21 @@ select
     case
         when t.days_observed >= {{ var('capacity_min_days', 14) }}
              and coalesce(th.threshold_bytes, vl.volume_threshold_bytes) is not null
-             and t.slope_bytes_per_day > 0
+             and t.slope_r > 0
              and coalesce(th.threshold_bytes, vl.volume_threshold_bytes) > t.current_bytes
-        then floor((coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_bytes_per_day)
+        then floor((coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_r)
     end                                                            as days_to_threshold,
     -- 판정 컬럼(발화는 안 함): kind가 의미를 정한다 — 13단계 "알림의 의미" 표 그대로.
     case
         when t.days_observed < {{ var('capacity_min_days', 14) }} then 'learning'
-        when t.slope_bytes_per_day <= 0 then 'stable_or_shrinking'
+        when t.slope_r <= 0 then 'stable_or_shrinking'
         when coalesce(th.threshold_bytes, vl.volume_threshold_bytes) is null then 'growth_only'
-        when (coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_bytes_per_day <= 30 then 'd30'
-        when (coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_bytes_per_day <= 90 then 'd90'
+        when (coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_r <= 30 then 'd30'
+        when (coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_r <= 90 then 'd90'
         else 'ok'
     end                                                            as risk_flag,
     current_timestamp                                              as computed_at
-from trend t
+from rounded t
 left join {{ ref('capacity_thresholds') }} th
     on t.instance_id = th.instance_id
 left join volume_limit vl

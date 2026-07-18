@@ -171,4 +171,4 @@ unit_tests:
     expect:
       rows:
         - {instance_id: 97, learning: false, threshold_bytes: 2000000000,
-           threshold_kind: "volume_reported", days_to_threshold: 86, risk_flag: "d90"}
+           threshold_kind: "volume_reported", days_to_threshold: 87, risk_flag: "d90"}
