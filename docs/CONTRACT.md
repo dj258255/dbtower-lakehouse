@@ -30,9 +30,10 @@
 | `plan_snapshot` | `captured_at` | 행은 불변, **보존이 카운트 기반**(쿼리당 최신 20개 스윕) → D2(DBTower: 시간 기반 보존 병행) 전까지 당일 추출분 불완전 가능 — 정직 표기 | 정합·드리프트만 | 추출 중 |
 | `size_snapshot` | `captured_at` | 불변(6시간 주기 append, 7일 보존) | 정합·드리프트만(completeness=격리 인스턴스, freshness=저빈도 주기라 경계 근접 전제 부적합) | 추출 중(DBTower V26, 2026-07-18 편입). `volume_*`·`max_bytes`는 임계 원천 ②로 계약상 nullable — 현 수집기는 NULL(지어내지 않음) |
 | `wait_event_snapshot` | `captured_at` | 불변(5분 주기 append, 7일 보존) | 정합·신선도·드리프트(completeness만 끔 — 미지원/무대기 기종은 사이클에 행이 없는 게 정상) | 추출 중(D1 — DBTower V25, 2026-07-18 편입). **기종별 의미 차이 계승**: wait_count·total_ms가 MySQL/MSSQL/Oracle=누적, PG=현재 스냅샷, Mongo=대기 큐 — 마트가 기종별로 해석해야 한다 |
+| `index_usage_snapshot` | `captured_at` | 불변(6시간 주기 append, 7일 보존) | 정합·드리프트만(completeness 끔 — 인덱스 없는 인스턴스·Oracle UNSUPPORTED는 사이클에 행이 없는 게 정상) | 추출 중(17단계 — DBTower V29, 2026-07-18 편입). `scan_count`는 **재시작 이후 누적 카운터**(fct_index_daily가 first-vs-last 델타로 변환·리셋 클램프). Oracle은 UNSUPPORTED(MONITORING USAGE 침습·AWR 라이선스)라 행 없음이 정상 |
 
 프로필이 끈 축은 게이트 보고서에 **SKIP**으로 남는다(안 잰 것을 잰 척하지 않는다).
-GRANT 목록: `GRANT SELECT ON query_snapshot, database_instance, backup_run, plan_snapshot, wait_event_snapshot, size_snapshot TO lakehouse_reader;`
+GRANT 목록: `GRANT SELECT ON query_snapshot, database_instance, backup_run, plan_snapshot, wait_event_snapshot, size_snapshot, index_usage_snapshot TO lakehouse_reader;`
 
 ### 1-2. 되쓰기(writeback) — 분석계→원천 방향의 유일한 쓰기 (Phase 14 D7)
 
