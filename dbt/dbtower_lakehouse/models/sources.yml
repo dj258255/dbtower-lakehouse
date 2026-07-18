@@ -84,3 +84,54 @@ sources:
             data_type: bigint
           - name: dt
             data_type: varchar
+      - name: wait_event_snapshot
+        description: >
+          대기 이벤트 5분 주기 영속(D1). 기종별 의미 차이(MySQL/MSSQL/Oracle=누적,
+          PG=현재 스냅샷, Mongo=대기 큐)는 CONTRACT §1-1 — fct가 델타와 라스트를 함께 실어
+          소비자가 기종에 맞게 고른다.
+        meta:
+          external_location: >-
+            {{ env_var('RAW_WAIT_EVENT_LOCATION',
+               "read_parquet('s3://lakehouse/raw/wait_event_snapshot/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: captured_at, data_type: timestamp}
+          - {name: event_name, data_type: varchar}
+          - {name: category, data_type: varchar}
+          - {name: wait_count, data_type: bigint}
+          - {name: total_ms, data_type: double}
+          - {name: dt, data_type: varchar}
+      - name: backup_run
+        description: "백업 이력(D+1 스냅샷 계약 — 사후 변이는 다음날 재추출이 반영)."
+        meta:
+          external_location: >-
+            {{ env_var('RAW_BACKUP_RUN_LOCATION',
+               "read_parquet('s3://lakehouse/raw/backup_run/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: started_at, data_type: timestamp}
+          - {name: status, data_type: varchar}
+          - {name: backup_type, data_type: varchar}
+          - {name: duration_ms, data_type: bigint}
+          - {name: detail, data_type: varchar}
+          - {name: location, data_type: varchar}
+          - {name: verify_status, data_type: varchar}
+          - {name: verified_at, data_type: timestamp}
+          - {name: remote_location, data_type: varchar}
+          - {name: dt, data_type: varchar}
+      - name: plan_snapshot
+        description: "플랜 변경 이력(D2 48h 보존 하한으로 하루창 유실 차단)."
+        meta:
+          external_location: >-
+            {{ env_var('RAW_PLAN_SNAPSHOT_LOCATION',
+               "read_parquet('s3://lakehouse/raw/plan_snapshot/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: query_id, data_type: varchar}
+          - {name: plan_hash, data_type: varchar}
+          - {name: plan_shape, data_type: varchar}
+          - {name: captured_at, data_type: timestamp}
+          - {name: dt, data_type: varchar}

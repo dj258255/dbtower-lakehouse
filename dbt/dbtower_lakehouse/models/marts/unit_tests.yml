@@ -143,3 +143,32 @@ unit_tests:
       rows:
         - {instance_id: 98, days_observed: 14, learning: false,
            days_to_threshold: null, risk_flag: "stable_or_shrinking"}
+
+  - name: test_capacity_forecast_volume_fallback
+    model: mart_capacity_forecast
+    description: >
+      seed(원천 ①)가 없을 때 기종이 보고한 상한(원천 ② — fct의 max_bytes)이 임계로
+      폴백되고 kind='volume_reported'가 되는지. 둘 다 없으면 growth_only(기존 테스트와 대칭).
+    given:
+      - input: ref('fct_size_daily')
+        rows:
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-01", total_bytes: 1000000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-02", total_bytes: 1010000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-03", total_bytes: 1020000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-04", total_bytes: 1030000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-05", total_bytes: 1040000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-06", total_bytes: 1050000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-07", total_bytes: 1060000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-08", total_bytes: 1070000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-09", total_bytes: 1080000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-10", total_bytes: 1090000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-11", total_bytes: 1100000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-12", total_bytes: 1110000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-13", total_bytes: 1120000000, max_bytes: 2000000000}
+          - {instance_id: 97, object_type: "table", object_name: "t", dt: "2026-01-14", total_bytes: 1130000000, max_bytes: 2000000000}
+      - input: ref('capacity_thresholds')
+        rows: []
+    expect:
+      rows:
+        - {instance_id: 97, learning: false, threshold_bytes: 2000000000,
+           threshold_kind: "volume_reported", days_to_threshold: 86, risk_flag: "d90"}

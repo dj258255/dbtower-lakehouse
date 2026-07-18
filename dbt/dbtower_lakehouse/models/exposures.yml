@@ -1,0 +1,52 @@
+version: 2
+
+# exposures (2.5단계 잔여 소탕) — "이 마트를 바꾸면 어느 소비자가 깨지나"의 선언.
+# dbt docs 계보 그래프에 소비자 노드로 떠서 영향 분석이 된다.
+exposures:
+  - name: metabase_analysis_dashboard
+    label: "Metabase 분석 대시보드"
+    type: dashboard
+    maturity: high
+    url: http://localhost:13001
+    description: "악화 쿼리 랭킹·일별 추이·인스턴스 필터(7단계, scripts/metabase_bootstrap.py로 재현)."
+    depends_on:
+      - ref('mart_query_regression')
+      - ref('fct_query_daily')
+    owner: {name: "beomsu"}
+
+  - name: metabase_capacity_dashboard
+    label: "Metabase 용량 대시보드 (13단계 C6 — 이력 14일 후 구축)"
+    type: dashboard
+    maturity: low
+    url: http://localhost:13001
+    description: "인스턴스별 증가율·임계 D-day. learning이 풀리는 이력이 쌓이면 카드 구축."
+    depends_on:
+      - ref('mart_capacity_forecast')
+      - ref('fct_size_daily')
+    owner: {name: "beomsu"}
+
+  - name: dbtower_baseline_merge
+    label: "DBTower BaselineService 장기 병합 (reverse ETL 소비자)"
+    type: application
+    maturity: high
+    description: >
+      되쓰기(D7)가 나른 mart_baseline_longterm을 DBTower가 이상 감지 베이스라인에
+      가중 병합한다(그쪽 V24·VERIFICATION 100절). 이 마트의 스키마 변경 = 그쪽 병합 파손.
+    depends_on:
+      - ref('mart_baseline_longterm')
+    owner: {name: "beomsu"}
+
+  - name: dbtower_mcp_lakehouse_tools
+    label: "DBTower MCP lakehouse_query/card_create (15단계 소비자)"
+    type: application
+    maturity: high
+    description: >
+      에이전트가 Metabase API 경유로 장기 마트를 SELECT 질의·카드화한다(그쪽 103절).
+      도구 설명에 실재 스키마가 박혀 있어, 아래 마트들의 컬럼 개명은 도구 설명 동기화 필요.
+    depends_on:
+      - ref('mart_query_regression')
+      - ref('mart_capacity_forecast')
+      - ref('mart_wait_top')
+      - ref('fct_backup_daily')
+      - ref('fct_plan_change_daily')
+    owner: {name: "beomsu"}

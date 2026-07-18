@@ -1089,3 +1089,25 @@ Metabase(pull)·DBTower reverse ETL(push)의 몫. 잔여: C6 용량 대시보드
 ②)는 공급기가 아직 NULL — 기종별 볼륨 조회는 DBTower 후속 아크.
 
 ## 16. 잔여 (정직)
+
+## 16. 마무리 아크 — 보조 원천 소비층·volume 폴백·exposures (2026-07-18)
+
+"추출만 되고 안 읽히던" 세 원천에 소비층을 얹고, 용량 임계의 두 번째 원천을 살렸다.
+
+```
+소스 3종 배선(wait_event·backup_run·plan_snapshot) + 스테이징 3 + 팩트 3 + 마트 1:
+  fct_wait_event_daily 134행 — delta_*(누적 기종)/last_*(스냅샷 기종) 병기(의미 뭉개지 않음)
+  fct_backup_daily 3행 — inst 2가 하루 18 LOG런(FULL 앵커+LOG 체인 V23의 실물)
+  fct_plan_change_daily 4행 · mart_wait_top 40행(inst 8 Oracle 상위: KSV master wait …)
+용량 임계 원천 ②: DBTower가 MSSQL 볼륨·Oracle autoextend 상한을 공급 시작
+  (Oracle 실측: 할당 1189MB·상한 96TB·available NULL 정직) → 마트가 seed 부재 시
+  'volume_reported'로 폴백 — unit test 고정(임계 2000MB → 잔여 86일·d90)
+exposures 4종(2.5단계 잔여 소탕): 분석/용량 대시보드 + DBTower 병합·MCP 도구(reverse
+  ETL 소비자를 계보에 선언 — 마트 스키마 변경의 영향 분석)
+CI: 픽스처 5소스 확장 — 로컬 전체 재현 dbt build PASS=52
+발행: 10테이블 단일 트랜잭션(신규 4종 편입)
+```
+
+정직한 표기: wait 팩트의 delta는 하루 1관측이면 0(first=last) — 사이클이 쌓여야
+발생량이 찬다. MSSQL 볼륨 라이브 값은 수집 시점의 대상 접속 불가(환경 히컵)로 이번
+사이클 미확인 — Oracle로 경로 검증, MSSQL은 다음 사이클의 몫.

@@ -227,3 +227,30 @@ models:
         tests: [not_null]
       - name: risk_flag
         description: "learning | stable_or_shrinking | growth_only | d30 | d90 | ok."
+
+  # --- 마무리 아크 — 보조 원천 소비층(14단계 소비) ---
+  - name: fct_wait_event_daily
+    description: >
+      일별 대기 이벤트 팩트. 기종별 의미 차이(누적/스냅샷/큐 — CONTRACT §1-1)를 뭉개지
+      않으려 delta_*(누적 기종의 발생량)와 last_*(그날 마지막 상태)를 함께 싣는다.
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: event_name, tests: [not_null]}
+      - {name: dt, tests: [not_null]}
+  - name: fct_backup_daily
+    description: "일별 백업 이력 팩트(D+1 재추출이 사후 verify 반영) — 분기 실패율 추세의 재료."
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: dt, tests: [not_null]}
+  - name: fct_plan_change_daily
+    description: "일별 플랜 변경 팩트 — 월간 플립 추세의 재료."
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: dt, tests: [not_null]}
+  - name: mart_wait_top
+    description: >
+      최근 30일 인스턴스별 상위 대기(delta_ms 기준 + sum_last_ms 병기 — 스냅샷 기종 정직
+      구분). "요즘 이 DB는 주로 뭘 기다리나"의 답.
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: event_name, tests: [not_null]}

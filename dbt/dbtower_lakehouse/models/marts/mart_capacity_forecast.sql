@@ -32,6 +32,17 @@ windowed as (
 
 ),
 
+volume_limit as (
+
+    -- 임계 원천 ②(기종이 아는 볼륨/상한 — MSSQL 볼륨 총량·Oracle autoextend 상한).
+    -- 최신 dt의 값만 쓴다. 없으면 NULL — seed(원천 ①)가 우선하고, 둘 다 없으면 증가율만.
+    select instance_id, max(coalesce(max_bytes, volume_total_bytes)) as volume_threshold_bytes
+    from {{ ref('fct_size_daily') }}
+    where dt = (select max(dt) from {{ ref('fct_size_daily') }})
+    group by instance_id
+
+),
+
 trend as (
 
     select
@@ -54,28 +65,34 @@ select
     -- 관측 부족이면 추세를 지어내지 않는다 — D1 베이스라인·D6 마트와 같은 "학습 중" 정직 패턴.
     t.days_observed < {{ var('capacity_min_days', 14) }}          as learning,
     t.current_bytes,
-    t.slope_bytes_per_day,
-    t.trend_r2,
-    th.threshold_bytes,
-    coalesce(th.threshold_kind, 'none')                            as threshold_kind,
+    round(t.slope_bytes_per_day, 2)                                as slope_bytes_per_day,
+    round(t.trend_r2, 4)                                           as trend_r2,
+    coalesce(th.threshold_bytes, vl.volume_threshold_bytes)        as threshold_bytes,
+    case
+        when th.threshold_bytes is not null then coalesce(th.threshold_kind, 'none')
+        when vl.volume_threshold_bytes is not null then 'volume_reported'
+        else 'none'
+    end                                                            as threshold_kind,
     -- 잔여일 = (임계 − 현재) / 기울기. 성장 없음·역성장·임계 없음·학습 중이면 NULL(지어내지 않음).
     case
         when t.days_observed >= {{ var('capacity_min_days', 14) }}
-             and th.threshold_bytes is not null
+             and coalesce(th.threshold_bytes, vl.volume_threshold_bytes) is not null
              and t.slope_bytes_per_day > 0
-             and th.threshold_bytes > t.current_bytes
-        then floor((th.threshold_bytes - t.current_bytes) / t.slope_bytes_per_day)
+             and coalesce(th.threshold_bytes, vl.volume_threshold_bytes) > t.current_bytes
+        then floor((coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_bytes_per_day)
     end                                                            as days_to_threshold,
     -- 판정 컬럼(발화는 안 함): kind가 의미를 정한다 — 13단계 "알림의 의미" 표 그대로.
     case
         when t.days_observed < {{ var('capacity_min_days', 14) }} then 'learning'
         when t.slope_bytes_per_day <= 0 then 'stable_or_shrinking'
-        when th.threshold_bytes is null then 'growth_only'
-        when (th.threshold_bytes - t.current_bytes) / t.slope_bytes_per_day <= 30 then 'd30'
-        when (th.threshold_bytes - t.current_bytes) / t.slope_bytes_per_day <= 90 then 'd90'
+        when coalesce(th.threshold_bytes, vl.volume_threshold_bytes) is null then 'growth_only'
+        when (coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_bytes_per_day <= 30 then 'd30'
+        when (coalesce(th.threshold_bytes, vl.volume_threshold_bytes) - t.current_bytes) / t.slope_bytes_per_day <= 90 then 'd90'
         else 'ok'
     end                                                            as risk_flag,
     current_timestamp                                              as computed_at
 from trend t
 left join {{ ref('capacity_thresholds') }} th
     on t.instance_id = th.instance_id
+left join volume_limit vl
+    on t.instance_id = vl.instance_id

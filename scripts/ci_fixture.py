@@ -169,6 +169,56 @@ def build_size_fixture(out_dir: str) -> int:
     return files
 
 
+def build_aux_fixtures(base_dir: str) -> None:
+    """wait_event·backup_run·plan_snapshot 최소 픽스처(Phase 14 소비층의 CI 재료)."""
+    def write(out_dir, schema, arrays, dt, iid):
+        pdir = Path(out_dir) / f"dt={dt}" / f"instance_id={iid}"
+        pdir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_arrays(arrays, schema=schema), pdir / "part-000.parquet",
+                       compression="zstd")
+
+    ts = lambda t: datetime.strptime(t, "%Y-%m-%d %H:%M:%S")  # noqa: E731
+    wait_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("event_name", pa.string(), nullable=False), pa.field("category", pa.string(), nullable=True),
+        pa.field("wait_count", pa.int64(), nullable=False), pa.field("total_ms", pa.float64(), nullable=False)])
+    # 누적 기종 흉내: 하루 2관측, last-first 델타 = 50 / 500ms
+    write(base_dir + "_wait", wait_schema, [
+        pa.array([1, 2], pa.int64()), pa.array([1, 1], pa.int64()),
+        pa.array([ts("2026-01-01 06:00:00"), ts("2026-01-01 23:00:00")], pa.timestamp("us")),
+        pa.array(["io/file", "io/file"], pa.string()), pa.array(["IO", "IO"], pa.string()),
+        pa.array([100, 150], pa.int64()), pa.array([1000.0, 1500.0], pa.float64())], "2026-01-01", 1)
+    backup_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("started_at", pa.timestamp("us"), nullable=False),
+        pa.field("status", pa.string(), nullable=False), pa.field("backup_type", pa.string(), nullable=True),
+        pa.field("duration_ms", pa.int64(), nullable=False), pa.field("detail", pa.string(), nullable=True),
+        pa.field("location", pa.string(), nullable=True), pa.field("verify_status", pa.string(), nullable=True),
+        pa.field("verified_at", pa.timestamp("us"), nullable=True),
+        pa.field("remote_location", pa.string(), nullable=True)])
+    write(base_dir + "_backup", backup_schema, [
+        pa.array([1, 2], pa.int64()), pa.array([1, 1], pa.int64()),
+        pa.array([ts("2026-01-01 01:00:00"), ts("2026-01-01 13:00:00")], pa.timestamp("us")),
+        pa.array(["SUCCESS", "FAILED"], pa.string()), pa.array(["FULL", "LOG"], pa.string()),
+        pa.array([1000, 2000], pa.int64()), pa.array([None, "err"], pa.string()),
+        pa.array(["/b/1", None], pa.string()), pa.array(["VERIFIED", None], pa.string()),
+        pa.array([ts("2026-01-01 02:00:00"), None], pa.timestamp("us")),
+        pa.array(["s3://b/1", None], pa.string())], "2026-01-01", 1)
+    plan_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("query_id", pa.string(), nullable=False), pa.field("plan_hash", pa.string(), nullable=False),
+        pa.field("plan_shape", pa.string(), nullable=True),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False)])
+    write(base_dir + "_plan", plan_schema, [
+        pa.array([1, 2], pa.int64()), pa.array([1, 1], pa.int64()),
+        pa.array(["q1", "q1"], pa.string()), pa.array(["h1", "h2"], pa.string()),
+        pa.array(["shape1", "shape2"], pa.string()),
+        pa.array([ts("2026-01-01 03:00:00"), ts("2026-01-01 15:00:00")], pa.timestamp("us"))],
+        "2026-01-01", 1)
+    print(f"aux 픽스처 3종 생성 → {base_dir}_wait/_backup/_plan")
+
+
 def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: str) -> None:
     """dbt unit test가 introspect할 수 있도록 raw 소스들을 뷰로 등록한다.
 
@@ -190,9 +240,17 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
             f"SELECT * FROM read_parquet('{size_fixture_dir}/dt=*/instance_id=*/*.parquet', "
             "hive_partitioning = 1)"
         )
+        base = fixture_dir  # aux 픽스처는 base_dir 접미 규약(_wait/_backup/_plan)
+        for tbl, suffix in (("wait_event_snapshot", "_wait"), ("backup_run", "_backup"),
+                            ("plan_snapshot", "_plan")):
+            con.execute(
+                f"CREATE OR REPLACE VIEW raw.{tbl} AS "
+                f"SELECT * FROM read_parquet('{base}{suffix}/dt=*/instance_id=*/*.parquet', "
+                "hive_partitioning = 1)"
+            )
     finally:
         con.close()
-    print(f"raw.query_snapshot·raw.size_snapshot 뷰 등록 → {duckdb_file}")
+    print(f"raw 소스 5종 뷰 등록 → {duckdb_file}")
 
 
 if __name__ == "__main__":
@@ -200,5 +258,6 @@ if __name__ == "__main__":
     build(target)
     size_target = target + "_size"
     build_size_fixture(size_target)
+    build_aux_fixtures(target)
     if len(sys.argv) > 2:
         register_source_view(sys.argv[2], target, size_target)
