@@ -119,3 +119,84 @@ models:
         data_type: double
       - name: recent_delta_calls
         data_type: hugeint
+
+  # --- Phase 14 (D5·D6) — 시간대 팩트와 장기 베이스라인 ---
+  # 계약(contract)은 되쓰기 경계 산출물인 mart_baseline_longterm에만 건다 —
+  # DBTower(D8)가 소비하는 스키마라 어긋나면 빌드에서 막혀야 한다.
+  # fct_query_hourly는 내부 중간 팩트라 테스트만(과계약 지양).
+  - name: fct_query_hourly
+    description: >
+      인스턴스+쿼리별 시간대 발생량 팩트(Phase 14 D5). fct_query_daily와 같은
+      양 끝 차분·리셋 클램프를 (dt, hour) 창으로 적용. 한 시간에 스냅샷 1개면
+      델타 0(정직한 한계 — 과대계상보다 낫다). 장기 베이스라인(D6)의 재료.
+    columns:
+      - name: instance_id
+        description: "database_instance FK."
+        tests:
+          - not_null
+      - name: query_id
+        description: "쿼리 지문 해시."
+        tests:
+          - not_null
+      - name: dt
+        description: "논리 날짜(UTC)."
+        tests:
+          - not_null
+      - name: hour
+        description: "captured_at의 시(0-23, UTC)."
+        tests:
+          - not_null
+      - name: delta_calls
+        description: "시간대 호출 증가량(리셋 클램프 >= 0)."
+      - name: delta_total_time_ms
+        description: "시간대 누적시간 증가량 ms(클램프 >= 0)."
+      - name: avg_latency_ms
+        description: "delta_time/delta_calls. 호출 0이면 NULL."
+
+  - name: mart_baseline_longterm
+    description: >
+      장기 요일x시간대 베이스라인(Phase 14 D6) — 되쓰기(D7)로 DBTower
+      baseline_longterm 테이블에 실려 7일 창 이상감지의 주간 계절성 오탐을 줄인다.
+      지표는 시간당 delta_calls. dow는 UTC 기준(DuckDB dayofweek: 일=0..토=6).
+      min_observations(기본 8)·인스턴스별 top-K(기본 500) 가드 — 잘린 쿼리는
+      "장기 없음 -> DBTower 현행 7일 창 폴백"이 계약이지 오류가 아니다.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: instance_id
+        data_type: bigint
+        description: "database_instance FK."
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: query_id
+        data_type: varchar
+        description: "쿼리 지문 해시."
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: dow
+        data_type: smallint
+        description: "요일(UTC, 일=0..토=6)."
+        constraints:
+          - type: not_null
+      - name: hour
+        data_type: smallint
+        description: "시간대(0-23, UTC)."
+        constraints:
+          - type: not_null
+      - name: mean_delta_calls
+        data_type: double
+        description: "그 (dow,hour) 버킷의 시간당 호출량 평균."
+      - name: stddev_delta_calls
+        data_type: double
+        description: "표본 표준편차. 관측 1개면 NULL(분산 정보 없음)."
+      - name: observations
+        data_type: bigint
+        description: "버킷 관측 수(min_observations 게이트 통과분만)."
+      - name: computed_at
+        data_type: timestamp with time zone
+        description: "이 베이스라인 계산 시각."

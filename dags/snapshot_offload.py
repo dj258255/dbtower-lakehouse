@@ -211,7 +211,53 @@ def snapshot_offload():
             logging.getLogger("snapshot_offload").exception("run_log 발행 실패(무시)")
         return {"dt": dt, "heartbeat_at": ts.isoformat()}
 
-    heartbeat(publish(transform(quality_gate(offload()))))
+    @task(max_active_tis_per_dag=1)
+    def offload_aux(data_interval_start: datetime | None = None) -> dict:
+        """보조 테이블(backup_run·plan_snapshot·…) 추출 (Phase 14 D3).
+
+        레지스트리(extract/tables.py)의 available 보조 테이블을 같은 dt로 내린다.
+        주 체인과 분리된 브랜치 — 보조 실패가 주 경로의 heartbeat를 굶겨 deadman
+        오경보를 내면 안 된다(실패 통보는 on_failure_callback이 동일하게 한다).
+        """
+        from extract.offload import run_offload_aux
+
+        logical_day = data_interval_start.date().isoformat()
+        return run_offload_aux(logical_day)
+
+    @task(retries=0)
+    def quality_gate_aux(aux_result: dict) -> dict:
+        """보조 테이블 게이트 — 테이블별 프로필(Phase 14 D4)로 검문한다.
+
+        backup_run(저빈도·사후 변이)·plan_snapshot(이벤트성)은 completeness·freshness를
+        재면 정상이 오탐이므로 프로필이 그 축을 SKIP한다 — 무엇을 안 쟀는지는
+        보고서에 남는다(정직 표기). 정합·드리프트 FAIL은 여전히 차단이다.
+        """
+        from extract.quality import assert_gate
+        from extract.tables import AUX_TABLES
+
+        statuses: dict[str, str] = {}
+        for name in AUX_TABLES:
+            dt = aux_result[name]["dt"]
+            reports = assert_gate([dt], table=name)  # FAIL이면 여기서 raise
+            statuses[name] = reports[0].status
+        return {"aux_gate": statuses}
+
+    @task
+    def writeback(publish_result: dict) -> dict:
+        """장기 베이스라인 되쓰기 (Phase 14 D7) — 발행된 마트를 원천 쪽 테이블로.
+
+        WRITEBACK_PG_* 미설정이면 no-op(선택 기능). 별도 역할(lakehouse_writer)·
+        단일 트랜잭션 — 원천 readonly 봉인과 폴러 경합 방어는 extract/writeback.py.
+        heartbeat와 병렬(둘 다 publish 하류) — 되쓰기 실패가 생존 신호를 굶기지 않는다.
+        """
+        from extract.writeback import run_writeback
+
+        return run_writeback()
+
+    pub = publish(transform(quality_gate(offload())))
+    heartbeat(pub)
+    writeback(pub)
+    quality_gate_aux(offload_aux())
 
 
 snapshot_offload()

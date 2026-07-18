@@ -21,6 +21,30 @@
   > 판정돼 **아무것도 안 뽑고 조용히 빈 결과**가 난다(셀프호스트 install 시 최다 함정).
 - **접근**: 읽기 전용 세션(`SET TRANSACTION READ ONLY`) + instance별 시간창 질의 + 서버커서 배치.
 
+### 1-1. 다중 원천 테이블 (Phase 14 — 레지스트리 `extract/tables.py`가 단일 진실)
+
+| 테이블 | 워터마크 | 불변성 | 게이트 프로필 | 상태 |
+|---|---|---|---|---|
+| `query_snapshot` | `captured_at` | 불변 | 4축 전부 | 주 파이프라인 |
+| `backup_run` | `started_at` | **사후 변이**(verify/remote가 나중에 UPDATE) → **D+1 스냅샷 계약**: 어제 dt를 오늘 뽑아도 이후 갱신될 수 있다. 워터마크는 불변인 `started_at` | 정합·드리프트만(저빈도 — 전 인스턴스 백업이 정상 아님 → completeness 오탐, 이벤트성 → freshness 오탐) | 추출 중 |
+| `plan_snapshot` | `captured_at` | 행은 불변, **보존이 카운트 기반**(쿼리당 최신 20개 스윕) → D2(DBTower: 시간 기반 보존 병행) 전까지 당일 추출분 불완전 가능 — 정직 표기 | 정합·드리프트만 | 추출 중 |
+| `wait_event_snapshot` | `captured_at` | (예정) | (예정) | **원천에 테이블 없음** — D1(DBTower) 선결. offload는 시끄럽게 거부 |
+
+프로필이 끈 축은 게이트 보고서에 **SKIP**으로 남는다(안 잰 것을 잰 척하지 않는다).
+GRANT 목록: `GRANT SELECT ON query_snapshot, database_instance, backup_run, plan_snapshot TO lakehouse_reader;`
+
+### 1-2. 되쓰기(writeback) — 분석계→원천 방향의 유일한 쓰기 (Phase 14 D7)
+
+- **대상**: 원천 쪽 별도 테이블 `baseline_longterm`(DDL 소유권은 DBTower Flyway — D8).
+  화물은 DuckLake에 발행된 `mart_baseline_longterm`(장기 dow×hour 베이스라인).
+- **역할 분리**: `lakehouse_writer`(해당 테이블만 SELECT/INSERT/DELETE) — **원천 읽기
+  계정(`lakehouse_reader`)·SourceConfig와 무관**. 원천 관측 테이블 readonly 봉인은 불변
+  (권한 격리 실측: writer로 `query_snapshot` SELECT 시 permission denied — VERIFICATION).
+- **원자성**: DELETE+INSERT 단일 트랜잭션 + 행수 대조(다르면 롤백) — DBTower 폴러가
+  도중에 읽어도 MVCC로 이전 버전을 본다(빈 테이블 순간 없음).
+- **선택 기능**: `WRITEBACK_PG_*` 미설정이면 no-op 스킵(명시 로그). 베이스라인이 비면
+  (이력 부족·top-K 잘림) DBTower는 현행 7일 창으로 폴백 — 오류가 아니라 계약.
+
 ### 원천 스키마
 
 | 컬럼 | 타입(PG) | 의미 |

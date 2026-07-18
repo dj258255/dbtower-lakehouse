@@ -34,13 +34,16 @@ import duckdb
 import psycopg2
 
 from extract.config import RAW_PREFIX, SinkConfig, SourceConfig
+from extract.tables import PRIMARY_TABLE, REGISTRY, TableSpec
 
 # freshness 임계: dt의 최신 captured_at이 다음날 00:00에서 이만큼 이상 벌어지면 경보.
 # WARN = 수집이 늦게 끊겼을 수 있음(경고, 차단 안 함). FAIL = 하루 절반 이상 비었음(차단).
 FRESHNESS_WARN_HOURS = float(os.getenv("QUALITY_FRESHNESS_WARN_HOURS", "3"))
 FRESHNESS_FAIL_HOURS = float(os.getenv("QUALITY_FRESHNESS_FAIL_HOURS", "12"))
 
-OK, WARN, FAIL = "OK", "WARN", "FAIL"
+# SKIP = 이 테이블의 게이트 프로필(Phase 14 D4)이 끈 축 — "안 쟀음"을 보고서에 남긴다.
+# 검사 생략을 조용히 지우면 "다 통과"로 오독된다(정직 표기).
+OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
 
 
 @dataclass
@@ -86,22 +89,26 @@ def _registry_instances(src: SourceConfig) -> list[int]:
         return [r[0] for r in cur.fetchall()]
 
 
-def _pg_counts(src: SourceConfig, dt: str, instances: list[int]) -> dict[int, int]:
+def _pg_counts(
+    src: SourceConfig, dt: str, instances: list[int], spec: TableSpec | None = None
+) -> dict[int, int]:
     """원천 PG의 dt 하루창(UTC 반열림) 인스턴스별 행수.
 
-    captured_at 단독 필터는 idx_snapshot_instance_time(instance_id, captured_at)의
-    선두를 못 타 원천 전체 Seq Scan이 된다(실측 332ms/31k버퍼 vs 인덱스 20ms/76버퍼).
-    offload가 지킨 것과 같은 원칙 — 레지스트리 인스턴스별로 등치 조건을 걸어
-    인덱스 선두를 태운다. 게이트가 원천에 주는 부하도 검문 대상이다.
+    워터마크 단독 필터는 (instance_id, 시각) 복합 인덱스의 선두를 못 타 원천 전체
+    Seq Scan이 된다(실측 332ms/31k버퍼 vs 인덱스 20ms/76버퍼). offload가 지킨 것과
+    같은 원칙 — 레지스트리 인스턴스별로 등치 조건을 걸어 인덱스 선두를 태운다.
+    Phase 14: 테이블·워터마크 컬럼을 스펙에서 일반화.
     """
+    spec = spec or REGISTRY[PRIMARY_TABLE]
     day_start = datetime.strptime(dt, "%Y-%m-%d")
     day_end = day_start + timedelta(days=1)
     counts: dict[int, int] = {}
     with psycopg2.connect(src.dsn()) as conn, conn.cursor() as cur:
         for iid in instances:
             cur.execute(
-                "SELECT count(*) FROM query_snapshot "
-                "WHERE instance_id = %s AND captured_at >= %s AND captured_at < %s",
+                f"SELECT count(*) FROM {spec.name} "
+                f"WHERE instance_id = %s AND {spec.watermark_col} >= %s "
+                f"AND {spec.watermark_col} < %s",
                 (iid, day_start, day_end),
             )
             n = int(cur.fetchone()[0])
@@ -110,9 +117,11 @@ def _pg_counts(src: SourceConfig, dt: str, instances: list[int]) -> dict[int, in
     return counts
 
 
-def _parquet_counts(con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str) -> dict[int, int]:
+def _parquet_counts(
+    con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str, prefix: str = RAW_PREFIX
+) -> dict[int, int]:
     """적재된 parquet의 dt 파티션 인스턴스별 행수. 파티션이 통째로 없으면 빈 dict."""
-    glob = f"s3://{sink.bucket}/{RAW_PREFIX}/dt={dt}/instance_id=*/*.parquet"
+    glob = f"s3://{sink.bucket}/{prefix}/dt={dt}/instance_id=*/*.parquet"
     try:
         rows = con.execute(
             f"SELECT instance_id, count(*) FROM read_parquet('{glob}', hive_partitioning = 1) "
@@ -124,11 +133,14 @@ def _parquet_counts(con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str) -
     return {int(r[0]): int(r[1]) for r in rows}
 
 
-def _parquet_max_captured(con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str):
-    glob = f"s3://{sink.bucket}/{RAW_PREFIX}/dt={dt}/instance_id=*/*.parquet"
+def _parquet_max_captured(
+    con: duckdb.DuckDBPyConnection, sink: SinkConfig, dt: str,
+    prefix: str = RAW_PREFIX, watermark_col: str = "captured_at",
+):
+    glob = f"s3://{sink.bucket}/{prefix}/dt={dt}/instance_id=*/*.parquet"
     try:
         row = con.execute(
-            f"SELECT max(captured_at) FROM read_parquet('{glob}', hive_partitioning = 1)"
+            f"SELECT max({watermark_col}) FROM read_parquet('{glob}', hive_partitioning = 1)"
         ).fetchone()
     except duckdb.IOException:
         return None
@@ -150,12 +162,13 @@ EXPECTED_SOURCE_COLUMNS: dict[str, str] = {
 }
 
 
-def _source_columns(src: SourceConfig) -> dict[str, str]:
-    """원천 query_snapshot의 실제 {컬럼: data_type} — information_schema 기준."""
+def _source_columns(src: SourceConfig, table_name: str = "query_snapshot") -> dict[str, str]:
+    """원천 테이블의 실제 {컬럼: data_type} — information_schema 기준."""
     with psycopg2.connect(src.dsn()) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name = 'query_snapshot'"
+            "WHERE table_name = %s",
+            (table_name,),
         )
         return {r[0]: r[1] for r in cur.fetchall()}
 
@@ -237,21 +250,44 @@ def check_freshness(max_captured, dt: str) -> CheckResult:
     return CheckResult("freshness", OK, detail)
 
 
-def evaluate(days: list[str]) -> list[DtReport]:
+def evaluate(days: list[str], table: str = PRIMARY_TABLE) -> list[DtReport]:
+    """게이트 4축을 테이블 프로필(Phase 14 D4)대로 평가한다.
+
+    프로필이 끈 축은 SKIP으로 기록 — backup_run처럼 저빈도·사후 변이 테이블에
+    completeness/freshness를 재면 정상 상태가 fail-closed 오탐이 되기 때문(끄는
+    이유는 extract/tables.py의 스펙 주석이 단일 진실).
+    """
+    spec = REGISTRY[table]
     src, sink = SourceConfig(), SinkConfig()
     registry = _registry_instances(src)
     con = _duck(sink)
     # 스키마 드리프트는 dt와 무관한 '지금 원천' 검사 — 한 번만 재고 모든 dt에 싣는다.
-    schema_check = check_schema_drift(_source_columns(src))
+    schema_check = (
+        check_schema_drift(_source_columns(src, spec.name), spec.expected_pg_columns)
+        if spec.gate.schema_drift
+        else CheckResult("schema_drift", SKIP, "프로필이 끔")
+    )
     reports: list[DtReport] = []
     for dt in days:
-        pg = _pg_counts(src, dt, registry)
-        pq = _parquet_counts(con, sink, dt)
-        mx = _parquet_max_captured(con, sink, dt)
+        pq = _parquet_counts(con, sink, dt, prefix=spec.raw_prefix)
         rep = DtReport(dt=dt)
-        rep.checks.append(check_reconciliation(pg, pq))
-        rep.checks.append(check_completeness(registry, pq))
-        rep.checks.append(check_freshness(mx, dt))
+        if spec.gate.reconciliation:
+            pg = _pg_counts(src, dt, registry, spec=spec)
+            rep.checks.append(check_reconciliation(pg, pq))
+        else:
+            rep.checks.append(CheckResult("reconciliation", SKIP, "프로필이 끔"))
+        if spec.gate.completeness:
+            rep.checks.append(check_completeness(registry, pq))
+        else:
+            rep.checks.append(CheckResult(
+                "completeness", SKIP, "저빈도 테이블 — 전 인스턴스 존재를 요구하면 오탐"))
+        if spec.gate.freshness:
+            mx = _parquet_max_captured(
+                con, sink, dt, prefix=spec.raw_prefix, watermark_col=spec.watermark_col)
+            rep.checks.append(check_freshness(mx, dt))
+        else:
+            rep.checks.append(CheckResult(
+                "freshness", SKIP, "이벤트성 테이블 — 경계 근접 전제가 부적합"))
         rep.checks.append(schema_check)
         reports.append(rep)
     return reports
@@ -274,22 +310,28 @@ def print_report(reports: list[DtReport]) -> None:
         print("GATE: PASS — 모든 dt 통과 → 다운스트림 진행 가능")
 
 
-def assert_gate(days: list[str]) -> list[DtReport]:
+def assert_gate(days: list[str], table: str = PRIMARY_TABLE) -> list[DtReport]:
     """게이트를 돌리고, FAIL이 있으면 예외를 던진다(Airflow/스크립트 fail-closed 진입점)."""
-    reports = evaluate(days)
+    reports = evaluate(days, table=table)
     print_report(reports)
     blocked = [r.dt for r in reports if r.blocked]
     if blocked:
-        raise RuntimeError(f"품질 게이트 FAIL — 파티션 {blocked}. 다운스트림 차단.")
+        raise RuntimeError(f"품질 게이트 FAIL — {table} 파티션 {blocked}. 다운스트림 차단.")
     return reports
 
 
-def main(days: list[str]) -> int:
-    reports = evaluate(days)
+def main(days: list[str], table: str = PRIMARY_TABLE) -> int:
+    reports = evaluate(days, table=table)
     print_report(reports)
     return 1 if any(r.blocked for r in reports) else 0
 
 
 if __name__ == "__main__":
     argv = sys.argv[1:] or ["2026-07-05", "2026-07-06", "2026-07-07"]
-    raise SystemExit(main(argv))
+    # 사용: python -m extract.quality DT [DT ...] [--table backup_run]
+    tbl = PRIMARY_TABLE
+    if "--table" in argv:
+        i = argv.index("--table")
+        tbl = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
+    raise SystemExit(main(argv, table=tbl))

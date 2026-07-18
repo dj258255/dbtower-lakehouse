@@ -959,7 +959,58 @@ suffix(카디널리티 자연 증가) + id 오프셋. 격리 프리픽스 `scale
 `cleanup`(scale/·scale_n/ 동시 정리, 신규)으로 잔존 0 확인. 실데이터 `raw/` 무손상
 확인. dbt는 `RAW_SNAPSHOT_LOCATION` 스왑 + `DBT_DUCKDB_FILE=/tmp/*`로 운영 파일 무접촉.
 
-## 14. 잔여 (정직)
+## 14. 14단계 — offload 확대 + 장기 베이스라인 되쓰기 (D3~D7, 2026-07-18)
+
+로드맵 14단계의 lakehouse 몫. D1(wait_event 영속)·D2(plan 보존)·D8(수신 병합)은
+DBTower 저장소 작업으로 남는다.
+
+### 14-1. D3 — 테이블 레지스트리 offload (실측)
+
+`extract/tables.py` 신설(TableSpec — 워터마크·불변성·게이트 프로필이 스펙의 일부),
+offload를 스펙 구동으로 일반화(기존 시그니처·상수 하위호환, 57 pytest 회귀 0).
+
+```
+aux offload dt=2026-07-16 (실원천, 1회차 = 2회차 멱등):
+  backup_run    24행 (인스턴스 1·2·7만 — 저빈도의 실증)
+  plan_snapshot 13행 (인스턴스 1·2·4·8만)
+wait_event_snapshot → RuntimeError "원천에 영속 테이블이 아직 없다(D1 선결)" — 시끄러운 거부
+주 경로 회귀 0: dt=2026-07-16 offload 183,708행(신규 인스턴스 32 포함 7개) → 게이트 4축 OK
+```
+
+### 14-2. D4 — 게이트 프로필 (실측)
+
+backup_run·plan_snapshot 게이트: reconciliation·schema_drift **OK**, completeness·freshness
+**SKIP**(사유가 보고서에 남음 — "저빈도 테이블 — 전 인스턴스 존재를 요구하면 오탐").
+4축 그대로였다면 24행/3인스턴스는 completeness FAIL로 **정상 상태가 차단**됐을 것 —
+프로필의 존재 이유가 실데이터로 증명됐다.
+
+### 14-3. D5·D6 — 시간대 팩트·장기 베이스라인 (실측)
+
+- `fct_query_hourly`: 실데이터 32,498행·6dt·24시간대(증분 delete+insert, 워터마크
+  리터럴 패턴 승계). `mart_baseline_longterm`: contract enforced + min_observations(8)·
+  인스턴스별 top-K(500) 가드.
+- **기본값에서 0행 — 정직한 결과다**: 이력 6dt로는 (dow,hour) 버킷 관측이 최대 1이라
+  8관측 게이트를 못 넘는다(롤링 마트가 실데이터에서 비는 것과 같은 원리 — 이력이
+  쌓여야 찬다). 로직은 `--vars baseline_min_observations: 1`로 검증: **32,498 버킷**
+  통계 산출(7인스턴스·dow 6종·top-K 동작) 후 기본값 원복.
+
+### 14-4. D7 — 되쓰기 왕복 (실측)
+
+```
+마트(min_obs=1) → publish → DuckLake 32,498행
+→ writeback(단일 트랜잭션 DELETE+INSERT) → 원천 PG baseline_longterm 32,498행 (행수 대조 통과)
+권한 격리: lakehouse_writer로 query_snapshot SELECT → "ERROR: permission denied" (봉인 실증)
+no-op: WRITEBACK_PG_* 미설정 → {"enabled": False, "rows": 0} (명시 스킵)
+원복: 기본 min_obs=8 재빌드 → 발행 0행 → 되쓰기 0행 — "장기 없음 → 폴백" 계약 상태
+```
+
+수신 테이블·역할 DDL은 검증 대행으로 dev PG에 수동 생성했다 — **소유권은 DBTower
+Flyway(D8)**이며, 실배포에선 DBTower 마이그레이션이 만든 테이블에 쓴다(계약 §1-2).
+
+DAG 배선: `offload_aux → quality_gate_aux` 브랜치(주 체인과 분리 — 보조 실패가
+heartbeat를 굶기지 않음), `writeback`은 publish 하류·heartbeat와 병렬.
+
+## 15. 잔여 (정직)
 
 - 원천이 라이브라 "완전히 닫힌 최신 구간"은 하루 뒤에야 안정. 실측 시점 기준 07-08이 열린 창이다.
 - 지문 충돌은 SUM 집계로 접었지만, 이는 서로 다른 물리 쿼리를 하나로 합치는 근사다. id로 계열을

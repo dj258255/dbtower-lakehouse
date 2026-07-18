@@ -31,7 +31,13 @@ from extract.ducklake_load import open_lake
 log = logging.getLogger("publish_marts")
 
 # 발행 대상 마트(= dbt marts 디렉터리의 테이블 materialization 전부).
-MART_TABLES = ("fct_query_daily", "mart_query_regression")
+# Phase 14: fct_query_hourly(D5)·mart_baseline_longterm(D6) 편입 — 후자는 되쓰기(D7) 화물.
+MART_TABLES = (
+    "fct_query_daily",
+    "mart_query_regression",
+    "fct_query_hourly",
+    "mart_baseline_longterm",
+)
 
 # dbt가 마트를 짓는 DuckDB 파일. 컨테이너에선 compose가 절대경로로 덮어쓴다.
 DEFAULT_DUCKDB_PATH = os.getenv(

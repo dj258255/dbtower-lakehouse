@@ -939,6 +939,16 @@ GB/일은 가장 예측 가능한 메트릭이라 선형+계절 보정으로 충
 **검증 기준(실측 TODO)**: DAG e2e(테이블별 게이트 프로필 통과) + plan_snapshot 보존 정합 실측 +
 계절성 오탐 시나리오(합성 월요일 피크 4주 주입 → 5주차 월요일 무경보) + 되쓰기 왕복.
 
+> 실행 기록(2026-07-18 라이브 실측 — VERIFICATION 14절): **lakehouse 몫(D3~D7) 구현·검증 완료.**
+> D3 `extract/tables.py` 레지스트리(+offload 일반화, 하위호환·57 pytest 회귀 0) — 실원천에서
+> backup_run 24행·plan_snapshot 13행 멱등 추출, wait_event는 시끄러운 거부(D1 대기). D4 게이트
+> 프로필 — completeness·freshness SKIP이 실데이터(3/6 인스턴스만 백업)에서 오탐을 막는 것 실증.
+> D5 `fct_query_hourly`(32,498행) · D6 `mart_baseline_longterm`(contract enforced, 기본 0행 =
+> 이력 6dt의 정직한 결과, min_obs=1 검증으로 로직 확인). D7 되쓰기 — **32,498행 단일 트랜잭션
+> 왕복 + 권한 격리 실증**(writer로 query_snapshot SELECT → permission denied) + no-op. DAG에
+> aux 브랜치·writeback 병렬 배선. **남은 것: D1·D2·D8(DBTower 저장소) + 계절성 오탐 시나리오
+> (4주 이력이 쌓이거나 합성 주입 시)** — 그 전까지 베이스라인 mart는 정직하게 빈다.
+
 ---
 
 ## 15단계 — 자연어 서빙: "지난 분기 대비 느려진 쿼리 보여줘"가 차트가 되기까지 (미착수 — 판정·착수 명세, 2026-07-17)

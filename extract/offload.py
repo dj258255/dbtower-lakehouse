@@ -27,33 +27,17 @@ from botocore.exceptions import ClientError
 
 from extract.config import (
     FETCH_BATCH_SIZE,
-    RAW_PREFIX,
-    SOURCE_TABLE,
     SinkConfig,
     SourceConfig,
 )
+from extract.tables import AUX_TABLES, PRIMARY_TABLE, REGISTRY, TableSpec
 
 log = logging.getLogger("snapshot_offload")
 
-# 원천 스키마를 명시 선언한다 — 이후 타입 추론이 흔들려도 parquet 스키마는 고정된다.
-# captured_at은 파티션 키(dt)로 빠지지 않고 값으로도 남긴다(구간 내 시각 보존 → Phase 2 델타 계산에 필요).
-SNAPSHOT_SCHEMA = pa.schema(
-    [
-        pa.field("id", pa.int64(), nullable=False),
-        pa.field("instance_id", pa.int64(), nullable=False),
-        pa.field("captured_at", pa.timestamp("us"), nullable=False),
-        pa.field("query_id", pa.string(), nullable=False),
-        pa.field("query_text", pa.string(), nullable=True),
-        pa.field("calls", pa.int64(), nullable=False),
-        pa.field("total_time_ms", pa.float64(), nullable=False),
-        pa.field("rows_examined", pa.int64(), nullable=False),
-    ]
-)
+# 하위호환 별칭(Phase 14 이전 이름) — 스키마의 단일 진실은 extract/tables.py 레지스트리.
+SNAPSHOT_SCHEMA = REGISTRY[PRIMARY_TABLE].schema
 
-_SELECT_COLUMNS = (
-    "id, instance_id, captured_at, query_id, query_text, "
-    "calls, total_time_ms, rows_examined"
-)
+_SELECT_COLUMNS = ", ".join(REGISTRY[PRIMARY_TABLE].select_columns)
 
 
 def _s3_client(sink: SinkConfig):
@@ -86,48 +70,38 @@ def _list_instance_ids(conn) -> list[int]:
         return [row[0] for row in cur.fetchall()]
 
 
-def _fetch_partition(conn, instance_id: int, day_start: datetime, day_end: datetime):
+def _fetch_partition(
+    conn, spec: TableSpec, instance_id: int, day_start: datetime, day_end: datetime
+):
     """한 instance의 하루치를 서버커서로 배치 읽어 pyarrow Table로 만든다.
 
-    WHERE instance_id = %s AND captured_at >= %s AND captured_at < %s
-    → idx_snapshot_instance_time(instance_id, captured_at)를 그대로 탄다.
+    WHERE instance_id = %s AND {워터마크} >= %s AND < %s — query_snapshot은
+    idx_snapshot_instance_time(instance_id, captured_at) 선두를 그대로 탄다.
+    보조 테이블(backup_run 등)은 행수가 작아 같은 등치 패턴으로 충분하다(Phase 14).
+    컬럼을 스펙에서 일반화 — 버퍼는 컬럼 순서대로 쌓고 명시 스키마 타입으로 고정한다.
     """
-    ids, iids, caps, qids, qtexts, calls, times, rows = [], [], [], [], [], [], [], []
+    buffers: list[list] = [[] for _ in spec.select_columns]
     # named cursor = 서버 사이드 커서. 결과 전체를 클라이언트 메모리에 올리지 않는다.
-    with conn.cursor(name=f"offload_{instance_id}_{day_start:%Y%m%d}") as cur:
+    with conn.cursor(name=f"offload_{spec.name}_{instance_id}_{day_start:%Y%m%d}") as cur:
         cur.itersize = FETCH_BATCH_SIZE
         cur.execute(
-            f"SELECT {_SELECT_COLUMNS} FROM {SOURCE_TABLE} "
-            "WHERE instance_id = %s AND captured_at >= %s AND captured_at < %s "
-            "ORDER BY captured_at",
+            f"SELECT {', '.join(spec.select_columns)} FROM {spec.name} "
+            f"WHERE instance_id = %s AND {spec.watermark_col} >= %s "
+            f"AND {spec.watermark_col} < %s ORDER BY {spec.watermark_col}",
             (instance_id, day_start, day_end),
         )
         for r in cur:
-            ids.append(r[0])
-            iids.append(r[1])
-            caps.append(r[2])
-            qids.append(r[3])
-            qtexts.append(r[4])
-            calls.append(r[5])
-            times.append(r[6])
-            rows.append(r[7])
+            for i, v in enumerate(r):
+                buffers[i].append(v)
 
-    if not ids:
+    if not buffers[0]:
         return None
 
-    return pa.Table.from_arrays(
-        [
-            pa.array(ids, type=pa.int64()),
-            pa.array(iids, type=pa.int64()),
-            pa.array(caps, type=pa.timestamp("us")),
-            pa.array(qids, type=pa.string()),
-            pa.array(qtexts, type=pa.string()),
-            pa.array(calls, type=pa.int64()),
-            pa.array(times, type=pa.float64()),
-            pa.array(rows, type=pa.int64()),
-        ],
-        schema=SNAPSHOT_SCHEMA,
-    )
+    arrays = [
+        pa.array(buf, type=f.type)
+        for buf, f in zip(buffers, spec.schema, strict=True)
+    ]
+    return pa.Table.from_arrays(arrays, schema=spec.schema)
 
 
 def _delete_prefix(s3, bucket: str, prefix: str) -> int:
@@ -189,11 +163,22 @@ def day_window(dt: date) -> tuple[datetime, datetime]:
     return day_start, day_start + timedelta(days=1)
 
 
-def run_offload(logical_date: str | date) -> dict:
-    """logical_date(어제)의 스냅샷을 instance별 parquet로 MinIO에 적재한다.
+def run_offload(logical_date: str | date, table: str = PRIMARY_TABLE) -> dict:
+    """logical_date(어제)의 원천 테이블 하루치를 instance별 parquet로 적재한다.
 
-    반환: {"dt", "instances": {instance_id: rows}, "total_rows"} — Airflow XCom·검증용.
+    Phase 14: table 인자로 레지스트리의 어느 테이블이든 같은 계약(멱등·인스턴스
+    루프·자기파괴 가드)으로 내린다. 기본값은 기존과 동일한 query_snapshot —
+    기존 호출부(DAG·CLI)는 무변경으로 동작한다.
+
+    반환: {"table", "dt", "instances": {instance_id: rows}, "total_rows"}.
     """
+    spec = REGISTRY[table]
+    if not spec.available:
+        # D1 선결(원천 영속 테이블 신설) 전에는 시끄럽게 거부 — 조용히 빈 결과 금지.
+        raise RuntimeError(
+            f"{table}은 원천에 영속 테이블이 아직 없다(레지스트리 available=False). "
+            "DBTower 쪽 D1 작업이 선결이다 — docs/ROADMAP.md 14단계."
+        )
     dt = parse_logical_date(logical_date)
     day_start, day_end = day_window(dt)
 
@@ -201,22 +186,22 @@ def run_offload(logical_date: str | date) -> dict:
     s3 = _s3_client(sink)
     _ensure_bucket(s3, sink.bucket)
 
-    result: dict = {"dt": dt.isoformat(), "instances": {}, "total_rows": 0}
+    result: dict = {"table": table, "dt": dt.isoformat(), "instances": {}, "total_rows": 0}
 
     conn = psycopg2.connect(src.dsn())
     # 읽기 전용 트랜잭션 — 원천을 절대 바꾸지 않는다는 계약을 세션 레벨로 못박는다.
     conn.set_session(readonly=True, autocommit=False)
     try:
         instance_ids = _list_instance_ids(conn)
-        log.info("dt=%s 대상 instance %s", dt, instance_ids)
+        log.info("table=%s dt=%s 대상 instance %s", table, dt, instance_ids)
 
         for instance_id in instance_ids:
-            table = _fetch_partition(conn, instance_id, day_start, day_end)
-            prefix = f"{RAW_PREFIX}/dt={dt.isoformat()}/instance_id={instance_id}/"
+            arrow = _fetch_partition(conn, spec, instance_id, day_start, day_end)
+            prefix = f"{spec.raw_prefix}/dt={dt.isoformat()}/instance_id={instance_id}/"
 
             # 아카이브 자기파괴 가드: 원천이 비었을 때는 삭제가 먼저 오면 안 된다.
             # 원천 보존 밖 dt의 재실행에서 기존 parquet가 유일본일 수 있기 때문.
-            source_rows = table.num_rows if table is not None else 0
+            source_rows = arrow.num_rows if arrow is not None else 0
             action = decide_partition_action(
                 source_rows, _prefix_exists(s3, sink.bucket, prefix)
             )
@@ -230,12 +215,12 @@ def run_offload(logical_date: str | date) -> dict:
                 log.info("기존 파티션 오브젝트 %d개 삭제 (%s)", removed, prefix)
 
             buf = io.BytesIO()
-            pq.write_table(table, buf, compression="zstd")
+            pq.write_table(arrow, buf, compression="zstd")
             buf.seek(0)
             key = prefix + "part-000.parquet"
             s3.put_object(Bucket=sink.bucket, Key=key, Body=buf.getvalue())
 
-            n = table.num_rows
+            n = arrow.num_rows
             result["instances"][instance_id] = n
             result["total_rows"] += n
             log.info("instance %s: %d행 → s3://%s/%s", instance_id, n, sink.bucket, key)
@@ -243,8 +228,20 @@ def run_offload(logical_date: str | date) -> dict:
         conn.rollback()  # 읽기 전용이라 커밋할 게 없다.
         conn.close()
 
-    log.info("적재 완료 dt=%s 총 %d행", dt, result["total_rows"])
+    log.info("적재 완료 table=%s dt=%s 총 %d행", table, dt, result["total_rows"])
     return result
+
+
+def run_offload_aux(logical_date: str | date) -> dict[str, dict]:
+    """보조 테이블(backup_run·plan_snapshot·…) 전부를 같은 dt로 내린다 (Phase 14 D3).
+
+    레지스트리의 available 보조 테이블을 순회 — 주 파이프라인(query_snapshot)과
+    분리된 태스크로 돌아, 보조 실패가 주 경로의 heartbeat를 굶기지 않는다.
+    """
+    results: dict[str, dict] = {}
+    for name in AUX_TABLES:
+        results[name] = run_offload(logical_date, table=name)
+    return results
 
 
 if __name__ == "__main__":
@@ -253,4 +250,8 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     day = sys.argv[1] if len(sys.argv) > 1 else (date.today() - timedelta(days=1)).isoformat()
-    print(json.dumps(run_offload(day), ensure_ascii=False, indent=2))
+    tbl = sys.argv[2] if len(sys.argv) > 2 else PRIMARY_TABLE
+    if tbl == "aux":
+        print(json.dumps(run_offload_aux(day), ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(run_offload(day, table=tbl), ensure_ascii=False, indent=2))
