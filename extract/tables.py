@@ -327,10 +327,37 @@ _CONFIG_PARAM_CHANGE = TableSpec(
     },
 )
 
+# 가용성 헬스 샘플 — 장기 SLO(21단계, DBTower V5·slo 패키지). 1분 폴링(up 여부·ping_millis)을
+# DBTower가 35일만 보존하고 지운다(에러버짓 회계 창). 30~35일 넘는 장기 가용성(분기 uptime·
+# 다운 추세)은 DBTower도 Prometheus도 안 봐서 여기서 장기로 판정한다. 고빈도·전 인스턴스 폴링
+# (down도 up=false로 1행)이라 completeness는 인스턴스 신규/제거에서 오탐 가능 → 끈다. 정합·신선도·
+# 드리프트만(1분 주기라 freshness는 오탐 없음).
+_HEALTH_SAMPLE = TableSpec(
+    name="health_sample",
+    select_columns=("id", "instance_id", "sampled_at", "up", "ping_millis"),
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("sampled_at", pa.timestamp("us"), nullable=False),
+        pa.field("up", pa.bool_(), nullable=False),
+        pa.field("ping_millis", pa.int64(), nullable=False),
+    ]),
+    watermark_col="sampled_at",
+    raw_prefix="raw/health_sample",
+    gate=GateProfile(completeness=False),
+    expected_pg_columns={
+        "id": "bigint",
+        "instance_id": "bigint",
+        "sampled_at": "timestamp without time zone",
+        "up": "boolean",
+        "ping_millis": "bigint",
+    },
+)
+
 REGISTRY: dict[str, TableSpec] = {
     s.name: s
     for s in (_QUERY_SNAPSHOT, _BACKUP_RUN, _PLAN_SNAPSHOT, _WAIT_EVENT_SNAPSHOT, _SIZE_SNAPSHOT,
-              _INDEX_USAGE_SNAPSHOT, _CONFIG_SNAPSHOT, _CONFIG_PARAM_CHANGE)
+              _INDEX_USAGE_SNAPSHOT, _CONFIG_SNAPSHOT, _CONFIG_PARAM_CHANGE, _HEALTH_SAMPLE)
 }
 
 # 주 파이프라인(게이트 4축·dbt·publish·heartbeat)이 도는 테이블.

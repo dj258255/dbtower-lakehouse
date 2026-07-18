@@ -80,6 +80,18 @@ backup as (
     select instance_id, gap_days as backup_gap_days, rpo_status as backup_status
     from {{ ref('mart_backup_rpo') }}
 
+),
+
+uptime_wk as (
+
+    select
+        f.instance_id,
+        round(100.0 * sum(f.up_samples) / nullif(sum(f.samples), 0), 2) as this_week_uptime_pct
+    from {{ ref('fct_uptime_daily') }} f
+    cross join week_bounds w
+    where f.dt between w.week_start and w.week_end
+    group by f.instance_id
+
 )
 
 select
@@ -100,6 +112,7 @@ select
     coalesce(pw.plan_regressed_this_week, 0)                               as plan_regressed_this_week,
     b.backup_gap_days,
     b.backup_status,
+    uw.this_week_uptime_pct,
     current_timestamp                                                       as computed_at
 from universe u
 cross join week_bounds w
@@ -108,3 +121,4 @@ left join cap       on u.instance_id = cap.instance_id
 left join wait_top1 wt on u.instance_id = wt.instance_id
 left join plan_wk   pw on u.instance_id = pw.instance_id
 left join backup    b  on u.instance_id = b.instance_id
+left join uptime_wk uw on u.instance_id = uw.instance_id

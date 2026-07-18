@@ -397,3 +397,41 @@ unit_tests:
       rows:
         - {instance_id: 5, change_dt: "2026-01-10", change_key: "wal_keep_size", plan_flips_after: 0, regressed_after: 0,
            before_bytes: 100.0, after_bytes: 150.0, size_ratio: 1.5, correlation: "followed_by_size_growth"}
+
+  # --- Phase 21 — 가용성 SLO ---
+  - name: test_uptime_daily_ratio
+    model: fct_uptime_daily
+    overrides:
+      macros:
+        is_incremental: false
+    description: "하루 4샘플 중 3 up = uptime 75%. ping 평균은 up 샘플로만(다운의 100ms 제외)."
+    given:
+      - input: ref('stg_health_sample')
+        rows:
+          - {instance_id: 1, dt: "2026-01-01", up: true,  ping_millis: 10}
+          - {instance_id: 1, dt: "2026-01-01", up: true,  ping_millis: 10}
+          - {instance_id: 1, dt: "2026-01-01", up: true,  ping_millis: 10}
+          - {instance_id: 1, dt: "2026-01-01", up: false, ping_millis: 100}
+    expect:
+      rows:
+        - {instance_id: 1, dt: "2026-01-01", samples: 4, up_samples: 3, down_samples: 1, uptime_pct: 75.0, avg_ping_ms: 10.0}
+
+  - name: test_uptime_slo_breach_and_meets
+    model: mart_uptime_slo
+    description: >
+      창 uptime이 목표 미만이면 breach, 100%면 meets. inst3 80% vs 목표 99.9(seed) → breach,
+      inst4 100% vs 기본 99.5(var) → meets. SLO 판정 산식을 기지 입력으로 고정.
+    given:
+      - input: ref('fct_uptime_daily')
+        rows:
+          - {instance_id: 3, dt: "2026-01-30", samples: 100, up_samples: 80,  down_samples: 20, uptime_pct: 80.0,  avg_ping_ms: 50.0}
+          - {instance_id: 4, dt: "2026-01-30", samples: 100, up_samples: 100, down_samples: 0,  uptime_pct: 100.0, avg_ping_ms: 2.0}
+      - input: ref('dim_instance')
+        rows: []
+      - input: ref('uptime_slo_targets')
+        rows:
+          - {instance_id: 3, target_pct: 99.9}
+    expect:
+      rows:
+        - {instance_id: 3, window_uptime_pct: 80.0,  target_pct: 99.9, slo_status: "breach"}
+        - {instance_id: 4, window_uptime_pct: 100.0, target_pct: 99.5, slo_status: "meets"}

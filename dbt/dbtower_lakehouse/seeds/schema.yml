@@ -24,6 +24,15 @@ seeds:
         regress_ratio: double
         min_after_calls: bigint
 
+  - name: uptime_slo_targets
+    description: >
+      인스턴스별 가용성 SLO 목표(21단계). target_pct = 목표 uptime %(기본 99.5, 전역 기본은
+      var uptime_slo_target). 여기 없는 인스턴스는 전역 기본으로 판정 — 행은 per-instance 오버라이드.
+    config:
+      column_types:
+        instance_id: bigint
+        target_pct: double
+
   - name: backup_rpo_thresholds
     description: >
       인스턴스별 백업 공백(RPO) 허용 한계(16단계 G4). max_gap_days = 마지막 성공 백업 이후

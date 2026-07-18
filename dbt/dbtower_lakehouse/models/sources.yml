@@ -204,3 +204,18 @@ sources:
           - {name: type, data_type: varchar}
           - {name: team_label, data_type: varchar}
           - {name: dt, data_type: varchar}
+      - name: health_sample
+        description: >
+          가용성 헬스 샘플(21단계, DBTower V5). 1분 폴링 up 여부·ping_millis. DBTower가 35일만
+          보존해 장기 uptime SLO는 여기서. up=false도 1행(다운도 관측). Prometheus 미노출.
+        meta:
+          external_location: >-
+            {{ env_var('RAW_HEALTH_SAMPLE_LOCATION',
+               "read_parquet('s3://lakehouse/raw/health_sample/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - {name: id, data_type: bigint}
+          - {name: instance_id, data_type: bigint}
+          - {name: sampled_at, data_type: timestamp}
+          - {name: up, data_type: boolean}
+          - {name: ping_millis, data_type: bigint}
+          - {name: dt, data_type: varchar}

@@ -1262,6 +1262,39 @@ max 서브쿼리 조합에서 DuckDB 내부오류. 명시 컬럼 + anchor CTE(da
 
 ---
 
+## 21단계 — 가용성 SLO: DBTower가 35일 뒤 지우는 up 여부를 장기로 (구현 완료 — 2026-07-19, VERIFICATION 21절)
+
+**상황 가정**: 창고의 판정이 넷·다섯이 됐는데(용량·플랜·백업·인덱스·설정 상관), 정작 "이 DB
+이번 분기 얼마나 떠 있었나"는 못 답했다. DBTower는 `health_sample`(1분 폴링 up 여부·ping)을
+쌓아 30일 SLO/에러버짓을 계산하지만 **35일만 보존하고 지운다.** 30~35일 넘는 장기 가용성
+(분기 uptime·다운 추세)은 어디에도 없었다.
+
+**왜 lakehouse인가 (경계 확인)**: DBTower를 전수 대조한 결과, `health_sample`이 두 잣대를 다
+통과하는 **유일한 미착수 원천**이었다 — (a) DBTower가 지우고(35일 prune), (b) 7·30일로 못 하는
+장기 판정. 게다가 **Prometheus 게이지로 노출도 안 된다**(호스트 디스크만 Prometheus로 감).
+즉 메트릭 경로(Prometheus→Thanos)에도 없는 빈 자리라, 경계를 안 침범한다. 나머지 DBTower
+테이블은 콘솔 감사(audit_event)·인프라·저빈도(review_request)라 lakehouse 도메인 밖.
+
+| # | 조각 | 구현 명세 | 검증 |
+|---|---|---|---|
+| U1 | 레지스트리 | `health_sample`(id·instance_id·sampled_at·up·ping_millis) TableSpec. 워터마크 sampled_at, 불변 append. 게이트 completeness 끔(인스턴스 신규/제거 오탐 방지) | 멱등 오프로드 |
+| U2 | fct_uptime_daily | 1분 샘플을 하루로: uptime_pct=up/전체, ping은 up 샘플로만 평균·p95(다운 시 ping은 타임아웃). 증분 delete+insert | unit test(75% 산식) |
+| U3 | mart_uptime_slo | 최근 N일(기본 30) uptime %를 목표(seed `uptime_slo_targets`/var)와 견줘 **SRE 에러버짓**·slo_status(meets/at_risk/breach). dim_instance 조인(기종) | unit test(breach/meets) |
+| U4 | 주간 보고 편입 | mart_weekly_ops_report에 `this_week_uptime_pct` — "느림·용량·백업·플랜"에 "떠 있었나"까지 한 줄 | 라이브 컬럼 |
+| U5 | 서빙·계보 | publish 19→21, CI 픽스처·env, MCP 도구 설명, exposures, CONTRACT §1 원천 행+GRANT, Metabase "가용성 SLO" 대시보드 | CI 그린 |
+
+**함정**: down 샘플의 ping_millis는 타임아웃/큰 값이라 지연 통계를 오염시킨다 → ping 평균·p95는
+`filter (up)`로 up일 때만. 에러버짓은 target=100이면 정의 불가(어떤 다운도 소진) → NULL 가드.
+
+> 실행 기록(2026-07-19 — VERIFICATION 21절): **U1~U5 완료.** 로컬 dbt build **PASS=129**(unit
+> test 2종 신규)·pytest 57 그린. **실데이터(dev, 4일 창)**: 마침내 상관과 달리 **바로 의미 있게
+> 켜졌다** — local-mssql **63.4%**·mssql-pitr **64.3%** uptime(평균 ping 2.1s·6.9s)로 **breach**,
+> local-mysql 98.9% breach(목표 99.5 근소 미달), PG·Mongo·Oracle 99.9%로 meets, dbtower-self 100%.
+> 기종 라벨과 함께 "어느 기종이 몇 % 떴나"가 한 줄로 읽힌다. 주간 보고에 uptime 칸, Metabase
+> "가용성 SLO" 대시보드 실화면. **가용성이 창고의 6번째 판정이 되어, 마지막 빈 자리가 채워졌다.**
+
+---
+
 ## 시간이 해제하는 체크리스트 (2026-07-18 기준 — 코드는 완성, 데이터가 쌓이길 기다림)
 
 > 구현이 남은 게 아니라 **이력이 쌓여야 의미가 생기는** 항목들. 각각 해제 조건과 그

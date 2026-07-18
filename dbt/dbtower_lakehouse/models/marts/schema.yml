@@ -410,6 +410,26 @@ models:
               arguments:
                 values: ["followed_by_regression", "followed_by_plan_flip", "followed_by_latency_rise", "followed_by_size_growth", "no_signal"]
 
+  # --- 21단계 — 가용성 SLO ---
+  - name: fct_uptime_daily
+    description: "일별 가용성 팩트(21단계) — up 샘플/전체로 uptime_pct, up일 때만 ping 평균·p95."
+    columns:
+      - {name: instance_id, tests: [not_null]}
+      - {name: dt, tests: [not_null]}
+  - name: mart_uptime_slo
+    description: >
+      장기 가용성 SLO(21단계) — 최근 N일(기본 30) uptime %를 목표(seed target_pct/var)와 견줘
+      SRE 에러버짓·slo_status(meets/at_risk/breach). DBTower 35일 창 밖 장기 판정. 기종 조인.
+    columns:
+      - name: instance_id
+        tests: [not_null, unique]
+      - name: slo_status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["meets", "at_risk", "breach"]
+
   # --- 20단계 — 인스턴스 차원(기종 축) ---
   - name: dim_instance
     description: >

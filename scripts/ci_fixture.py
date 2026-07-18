@@ -260,6 +260,21 @@ def build_aux_fixtures(base_dir: str) -> None:
         pa.array([ts("2026-01-01 01:00:00")], pa.timestamp("us")),
         pa.array(["work_mem"], pa.string()), pa.array(["4MB"], pa.string()),
         pa.array(["1MB"], pa.string()), pa.array(["CHANGED"], pa.string())], "2026-01-01", 1)
+    # 가용성 헬스 샘플(21단계) — inst1 하루 4샘플 중 1 down(uptime 75%), inst2 전부 up(100%).
+    health_schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False), pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("sampled_at", pa.timestamp("us"), nullable=False),
+        pa.field("up", pa.bool_(), nullable=False), pa.field("ping_millis", pa.int64(), nullable=False)])
+    write(base_dir + "_health", health_schema, [
+        pa.array([1, 2, 3, 4], pa.int64()), pa.array([1, 1, 1, 1], pa.int64()),
+        pa.array([ts("2026-01-01 00:00:00"), ts("2026-01-01 06:00:00"),
+                  ts("2026-01-01 12:00:00"), ts("2026-01-01 18:00:00")], pa.timestamp("us")),
+        pa.array([True, True, True, False], pa.bool_()),
+        pa.array([10, 10, 10, 100], pa.int64())], "2026-01-01", 1)
+    write(base_dir + "_health", health_schema, [
+        pa.array([5, 6], pa.int64()), pa.array([2, 2], pa.int64()),
+        pa.array([ts("2026-01-01 00:00:00"), ts("2026-01-01 12:00:00")], pa.timestamp("us")),
+        pa.array([True, True], pa.bool_()), pa.array([3, 3], pa.int64())], "2026-01-01", 2)
     # 인스턴스 차원(20단계) — 팩트와 달리 instance_id 파티션 없이 dt별 한 파일(전량 스냅샷).
     dim_schema = pa.schema([
         pa.field("id", pa.int64(), nullable=False), pa.field("name", pa.string(), nullable=True),
@@ -270,7 +285,7 @@ def build_aux_fixtures(base_dir: str) -> None:
         pa.array([1, 2], pa.int64()), pa.array(["local-mysql", "local-postgres"], pa.string()),
         pa.array(["MYSQL", "POSTGRESQL"], pa.string()), pa.array([None, None], pa.string())],
         schema=dim_schema), dim_dir / "part-000.parquet", compression="zstd")
-    print(f"aux 픽스처 7종 생성 → {base_dir}_wait/_backup/_plan/_index/_config_snap/_config_change/_dim")
+    print(f"aux 픽스처 8종 생성 → {base_dir}_wait/_backup/_plan/_index/_config_snap/_config_change/_health/_dim")
 
 
 def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: str) -> None:
@@ -297,7 +312,8 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
         base = fixture_dir  # aux 픽스처는 base_dir 접미 규약(_wait/_backup/_plan)
         for tbl, suffix in (("wait_event_snapshot", "_wait"), ("backup_run", "_backup"),
                             ("plan_snapshot", "_plan"), ("index_usage_snapshot", "_index"),
-                            ("config_snapshot", "_config_snap"), ("config_param_change", "_config_change")):
+                            ("config_snapshot", "_config_snap"), ("config_param_change", "_config_change"),
+                            ("health_sample", "_health")):
             con.execute(
                 f"CREATE OR REPLACE VIEW raw.{tbl} AS "
                 f"SELECT * FROM read_parquet('{base}{suffix}/dt=*/instance_id=*/*.parquet', "
@@ -310,7 +326,7 @@ def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: s
         )
     finally:
         con.close()
-    print(f"raw 소스 9종 뷰 등록 → {duckdb_file}")
+    print(f"raw 소스 10종 뷰 등록 → {duckdb_file}")
 
 
 if __name__ == "__main__":

@@ -279,9 +279,26 @@ select
     plan_flips_this_week      as plan_flips,
     plan_regressed_this_week  as plan_regressed,
     backup_gap_days           as backup_gap_days,
-    backup_status             as backup_status
+    backup_status             as backup_status,
+    this_week_uptime_pct      as uptime_pct
 from mart_weekly_ops_report
 order by instance_id\
+"""
+
+UPTIME_SLO_SQL = """\
+select
+    instance_id,
+    instance_name,
+    engine,
+    days_observed,
+    window_uptime_pct,
+    worst_day_uptime_pct,
+    round(avg_ping_ms, 1)          as avg_ping_ms,
+    target_pct,
+    error_budget_remaining_pct,
+    slo_status
+from mart_uptime_slo
+order by window_uptime_pct\
 """
 
 BACKUP_RPO_SQL = """\
@@ -605,6 +622,36 @@ def main() -> None:
         print(f"[설정] {MB_URL}/dashboard/{config_dash_id}")
     else:
         print("[설정] mart_config_change 없음 — 설정 드리프트 건너뜀(publish 먼저)")
+
+    # 가용성 SLO(Phase 21) — mart_uptime_slo가 발행돼 있을 때만.
+    api("POST", f"/api/database/{db_id}/sync_schema", token=token)
+    tables = set()
+    for _ in range(30):
+        time.sleep(2)
+        tables = {t["name"] for t in api("GET", f"/api/database/{db_id}/metadata", token=token)["tables"]}
+        if "mart_uptime_slo" in tables:
+            break
+    if "mart_uptime_slo" in tables:
+        slo_card = ensure_plain_card(
+            token, db_id, "가용성 SLO — 최근 30일(기종별)", UPTIME_SLO_SQL, "table", {})
+        for dash in api("GET", "/api/dashboard", token=token):
+            if dash["name"] == "가용성 SLO":
+                slo_dash_id = dash["id"]
+                break
+        else:
+            dash = api("POST", "/api/dashboard", token=token, body={
+                "name": "가용성 SLO",
+                "description": "최근 30일 uptime %를 목표와 견줘 SRE 에러버짓·slo_status. "
+                               "DBTower 35일 창 밖 장기 판정. 기종별로 읽힌다.",
+            })
+            slo_dash_id = dash["id"]
+            api("PUT", f"/api/dashboard/{slo_dash_id}", token=token, body={
+                "dashcards": [{"id": -1, "card_id": slo_card, "row": 0, "col": 0,
+                               "size_x": 24, "size_y": 7}]})
+            print(f"[SLO] 대시보드 생성 (id={slo_dash_id})")
+        print(f"[SLO] {MB_URL}/dashboard/{slo_dash_id}")
+    else:
+        print("[SLO] mart_uptime_slo 없음 — 건너뜀(publish 먼저)")
     print(f"\n완료 — ({ADMIN_EMAIL}로 로그인)")
 
 

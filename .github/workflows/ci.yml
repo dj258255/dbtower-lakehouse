@@ -66,4 +66,5 @@ jobs:
           RAW_CONFIG_SNAPSHOT_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_config_snap/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
           RAW_CONFIG_PARAM_CHANGE_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_config_change/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
           RAW_DIM_INSTANCE_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_dim/dt=*/*.parquet', hive_partitioning = 1)"
+          RAW_HEALTH_SAMPLE_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_health/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
         run: dbt build --profiles-dir . --project-dir .
