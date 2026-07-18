@@ -1138,6 +1138,51 @@ table_io_waits_summary_by_index_usage / Mongo $indexStats), Oracle은 UNSUPPORTE
 
 ---
 
+## 18단계 — 설정 드리프트: "이 설정 바뀐 뒤로 느려졌다"의 원인 후보 (구현 완료 — 실행 기록 2026-07-18, VERIFICATION 18절)
+
+**상황 가정**: "이 DB가 2주째 느려졌다"는 신고. 흔한 숨은 원인은 사람이 조용히 바꾼 파라미터
+(`work_mem`, `max_connections` 등)다. DBTower는 1시간마다 파라미터를 읽어 변경을 감지하고
+알림을 쏘지만(V27 config_snapshot·config_param_change), 그 이력을 **7일류로 지운다**(자체
+retention sweep). "3개월 전 언제부터 이렇게 됐나"와 "그 변경 뒤 성능이 나빠졌나"는 장기
+이력이 있어야 답하는데, 그게 매일 사라지고 있었다.
+
+**왜 이 저장소인가**: 두 판정 모두 장기 창이 전제다. (1) 설정 변경 타임라인은 분기 단위
+되짚기가 필요하고, (2) **상관(변경 → 뒤이은 플랜 회귀)은 장기 설정 이력과 장기 성능 이력이
+같은 창고에 있어야만 가능**하다 — DBTower 7일 창은 구조적으로 못 한다. 용량 D-day·플랜 회귀·
+백업 공백에 이은 네 번째 "창고라야 가능한 판정"이자, 앞의 판정들에 "왜 그렇게 됐나"의 첫
+후보를 붙이는 층이다.
+
+**전제**: producer가 DBTower에 **이미 완성**(V27 테이블 3종 + ConfigDriftDetector 1시간 주기 +
+기존 parameters() 5기종 재사용, 신규 operator 0줄). 그래서 이 단계는 **lakehouse 단독 아크** —
+DBTower는 GRANT 한 줄(운영)뿐, 코드 변경 0.
+
+### 착수 명세 (Opus) — 18단계
+
+| # | 조각 | 구현 명세 | 검증 기준 |
+|---|---|---|---|
+| E1 | 레지스트리 편입 | `config_snapshot`·`config_param_change` TableSpec(워터마크 captured_at, 불변 append). **`config_current_param`은 거울(upsert/delete·변이)이라 제외** — 불변 append만 내린다는 계약 유지. 게이트 정합·드리프트만(저빈도·무변경 사이클 다수) | 멱등 오프로드, 게이트 통과 |
+| E2 | 스테이징 | `stg_config_snapshot`·`stg_config_param_change`(타입·dt 캐스팅) | 뷰 생성 |
+| E3 | fct_config_change_daily | config_snapshot을 **스파인**으로 "수집됐는데 무변경(quiet)"과 "수집 없음(gap)"을 구분(cycles_collected) + config_param_change 상세(change_events·params_changed) | 무변경 인스턴스도 cycles>0·changes=0 행 |
+| E4 | mart_config_change | 최근 90일 변경 타임라인 서빙("언제 무엇이 어떻게"). 명시 컬럼(select * 회피 — hive 뷰 위 자기참조 max 서브쿼리가 DuckDB 바인더 내부오류) | 변경 이벤트 시간순 |
+| E5 | mart_config_impact | 변경 뒤 N일(기본 7) 내 플랜 뒤집힘/회귀 상관. correlation: followed_by_regression/followed_by_plan_flip/no_flip_observed. **상관이지 인과 아님**(조언 어휘, mart_index_verdict와 같은 결) | unit test로 산식 고정 |
+| E6 | 서빙·발행·계보 | publish 3종 편입, exposures(MCP 소비자)·CI 픽스처(변경↔뒤집힘 겹침)·워크플로 env 2종·CONTRACT §1 두 행+GRANT | CI 그린 |
+
+**함정(선검증)**: (a) instance_id·dt가 파일 컬럼과 파티션 경로에 중복 → `select *` + 자기참조
+max 서브쿼리 조합에서 DuckDB 내부오류. 명시 컬럼 + anchor CTE(date−정수)로 회피(mart_query_regression
+패턴). (b) 초기엔 플랜 이력이 얕아 상관이 대부분 no_flip_observed — 정직한 결과, 이력이 쌓이며
+켜진다. (c) "누가"는 대상 DB가 안 줘 원천에 없다 → 마트도 "언제·무엇이"까지(정직 한계).
+
+> 실행 기록(2026-07-18 라이브 실측 — VERIFICATION 18절): **E1~E6 구현·검증 완료.** 로컬 CI
+> 빌드 **PASS=106**(unit test 상관 산식 신규·accepted_values), pytest 57 그린. **실데이터(dev
+> 창고)**: 원천에 실제 드리프트 존재 — 인스턴스 2·4의 `work_mem`이 4096↔8192로 오르내림.
+> 오프로드(config_snapshot 160행·config_param_change 4행) → `mart_config_change` 4행(그 변경
+> 그대로), `fct_config_change_daily` 7행(**전 인스턴스 23사이클 수집 + 2·4만 change_events=2**,
+> 나머지 0 = 무변경 vs 미수집 구분 실증), `mart_config_impact` 4행(플랜 이력 얕아 no_flip_observed —
+> 정직). CI 픽스처엔 변경↔뒤집힘 겹침을 심어 **followed_by_plan_flip** 산출 확인. Metabase "설정
+> 드리프트" 대시보드 실화면. 상관의 실데이터 개화는 **시간 해제**(플랜 이력 축적).
+
+---
+
 ## 시간이 해제하는 체크리스트 (2026-07-18 기준 — 코드는 완성, 데이터가 쌓이길 기다림)
 
 > 구현이 남은 게 아니라 **이력이 쌓여야 의미가 생기는** 항목들. 각각 해제 조건과 그

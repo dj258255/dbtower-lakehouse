@@ -1151,3 +1151,38 @@ data test 9종 실데이터에서도 전부 PASS.
 정직한 표기: 판정의 "실데이터 완성"은 aux 오프로드(플랜·백업) 이력이 쌓여야 온다 —
 ROADMAP "시간이 해제하는 체크리스트"에 해제 조건·예상일 명문화. 지금 마트는 정직하게
 비거나(플랜) 창고 커버리지만큼만 판정한다(백업).
+
+## 18. 18단계 — 설정 드리프트 오프로드 (2026-07-18)
+
+DBTower가 7일류로 지우는 설정 변경 이력(V27)을 장기 보관하고, 설정 변경을 성능 회귀의
+원인 후보로 지목한다(상관). producer는 DBTower에 이미 완성 — lakehouse 단독 아크, 신규 수집 0.
+
+```
+레지스트리 2종(config_snapshot·config_param_change, append-only만 — config_current_param은
+  거울/변이라 제외). 게이트 정합·드리프트만.
+fct_config_change_daily: config_snapshot 스파인으로 "수집됐는데 무변경"과 "수집 없음" 구분.
+mart_config_change: 최근 90일 변경 타임라인(select * 회피 — hive 뷰+자기참조 max가 DuckDB
+  내부오류. 명시 컬럼+anchor CTE로 안정화).
+mart_config_impact: 변경 뒤 N일 내 플랜 뒤집힘/회귀 상관. 상관이지 인과 아님(조언 어휘).
+unit test(상관 산식)·accepted_values(correlation 3값). 로컬 dbt build PASS=106·pytest 57 그린.
+발행 15→18테이블, exposures·CONTRACT 두 원천 행+GRANT.
+```
+
+라이브 실측(dev 창고):
+
+```
+원천에 실제 드리프트 존재 — 인스턴스 2·4의 work_mem이 4096↔8192로 오르내림(사람이 올렸다
+  내린 흔적). 오프로드: config_snapshot 160행 · config_param_change 4행.
+mart_config_change 4행 — 그 변경 그대로(2·4 work_mem, old/new 값·CHANGED).
+fct_config_change_daily 7행 — 전 인스턴스 cycles_collected=22~23(수집됨) +
+  2·4만 change_events=2/params_changed=1, 나머지 0 → "무변경 vs 미수집" 구분 실증.
+mart_config_impact 4행 — 전부 no_flip_observed(창고 플랜 이력이 07-16 하루뿐 → 상관할
+  뒤집힘 없음. 정직). CI 픽스처엔 변경(01-01)↔뒤집힘(01-02) 겹침을 심어
+  followed_by_plan_flip 산출로 상관 로직 확인.
+Metabase "설정 드리프트" 대시보드(변경 타임라인+영향 상관+일별 수집) 실화면.
+같은 사이클에 17단계 인덱스 마트도 첫 실발행(fct_index_daily·mart_index_verdict 72행).
+```
+
+정직한 표기: 상관(mart_config_impact)의 실데이터 개화는 플랜 이력이 쌓여야 온다 — 지금은
+설정 변경은 실물, 상관은 정직하게 no_flip_observed. "누가" 바꿨는지는 대상 DB가 안 줘
+원천에 없어 마트도 "언제·무엇이"까지다.

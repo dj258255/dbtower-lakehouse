@@ -338,6 +338,74 @@ def ensure_weekly_dashboard(token: str, cards: dict[str, int]) -> int:
     return dash_id
 
 
+# ---------------------------------------------------------------- 설정 드리프트 (Phase 18)
+# "언제 무엇이 바뀌었나" 타임라인 + 그 변경 뒤 성능 회귀가 뒤따랐나(상관). DBTower가 7일류로
+# 지우는 이력을 장기로 되살려, 설정 변경을 성능 회귀의 원인 후보로 지목한다.
+CONFIG_DASHBOARD_NAME = "설정 드리프트"
+
+CONFIG_CHANGE_SQL = """\
+select
+    instance_id,
+    dt                as change_dt,
+    param_name,
+    old_value,
+    new_value,
+    change_kind
+from mart_config_change
+order by captured_at desc\
+"""
+
+CONFIG_IMPACT_SQL = """\
+select
+    instance_id,
+    change_dt,
+    param_name,
+    new_value,
+    plan_flips_after,
+    regressed_after,
+    correlation
+from mart_config_impact
+order by regressed_after desc, plan_flips_after desc, change_dt desc\
+"""
+
+CONFIG_DAILY_SQL = """\
+select
+    instance_id,
+    dt,
+    cycles_collected,
+    change_events,
+    params_changed
+from fct_config_change_daily
+order by change_events desc, instance_id\
+"""
+
+
+def ensure_config_dashboard(token: str, cards: dict[str, int]) -> int:
+    """설정 드리프트 — 변경 타임라인 + 영향 상관 + 일별 수집/변경."""
+    for dash in api("GET", "/api/dashboard", token=token):
+        if dash["name"] == CONFIG_DASHBOARD_NAME:
+            print(f"[dashboard] 기존 재사용: {CONFIG_DASHBOARD_NAME} (id={dash['id']})")
+            return dash["id"]
+    dash = api("POST", "/api/dashboard", token=token, body={
+        "name": CONFIG_DASHBOARD_NAME,
+        "description": "설정 변경 장기 타임라인 + 변경 뒤 플랜 회귀 상관(18단계). "
+                       "'누가'는 대상 DB가 안 줘 없다 — 언제·무엇이·그 뒤 무슨 일까지.",
+    })
+    dash_id = dash["id"]
+    api("PUT", f"/api/dashboard/{dash_id}", token=token, body={
+        "dashcards": [
+            {"id": -1, "card_id": cards["change"], "row": 0, "col": 0,
+             "size_x": 12, "size_y": 7},
+            {"id": -2, "card_id": cards["impact"], "row": 0, "col": 12,
+             "size_x": 12, "size_y": 7},
+            {"id": -3, "card_id": cards["daily"], "row": 7, "col": 0,
+             "size_x": 24, "size_y": 6},
+        ],
+    })
+    print(f"[dashboard] 생성: {CONFIG_DASHBOARD_NAME} (id={dash_id})")
+    return dash_id
+
+
 def ensure_card(token: str, db_id: int, name: str, sql: str,
                 display: str, viz: dict) -> int:
     body = {
@@ -510,6 +578,28 @@ def main() -> None:
         print(f"[주간] {MB_URL}/dashboard/{weekly_dash_id}")
     else:
         print("[주간] mart_weekly_ops_report 없음 — 주간 보고 건너뜀(publish 먼저)")
+
+    # 설정 드리프트(Phase 18) — mart_config_change가 발행돼 있을 때만.
+    api("POST", f"/api/database/{db_id}/sync_schema", token=token)
+    tables = set()
+    for _ in range(30):
+        time.sleep(2)
+        tables = {t["name"] for t in api("GET", f"/api/database/{db_id}/metadata", token=token)["tables"]}
+        if "mart_config_change" in tables:
+            break
+    if "mart_config_change" in tables:
+        config_cards = {
+            "change": ensure_plain_card(
+                token, db_id, "설정 변경 타임라인 — 언제 무엇이", CONFIG_CHANGE_SQL, "table", {}),
+            "impact": ensure_plain_card(
+                token, db_id, "설정 변경 영향 — 뒤이은 플랜 회귀 상관", CONFIG_IMPACT_SQL, "table", {}),
+            "daily": ensure_plain_card(
+                token, db_id, "일별 수집·변경(무변경 vs 미수집 구분)", CONFIG_DAILY_SQL, "table", {}),
+        }
+        config_dash_id = ensure_config_dashboard(token, config_cards)
+        print(f"[설정] {MB_URL}/dashboard/{config_dash_id}")
+    else:
+        print("[설정] mart_config_change 없음 — 설정 드리프트 건너뜀(publish 먼저)")
     print(f"\n완료 — ({ADMIN_EMAIL}로 로그인)")
 
 
