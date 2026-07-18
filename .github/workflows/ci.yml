@@ -62,4 +62,5 @@ jobs:
           RAW_WAIT_EVENT_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_wait/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
           RAW_BACKUP_RUN_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_backup/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
           RAW_PLAN_SNAPSHOT_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_plan/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
+          RAW_INDEX_USAGE_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_index/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
         run: dbt build --profiles-dir . --project-dir .
