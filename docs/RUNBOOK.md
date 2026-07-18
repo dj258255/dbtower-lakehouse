@@ -269,3 +269,17 @@ docker exec -w /opt/airflow lakehouse-airflow-scheduler python -m extract.deadma
 
 - heartbeat 테이블 직접 조회: `ducklake_catalog` DB의 `pipeline_heartbeat`
   (`SELECT * FROM pipeline_heartbeat`). 원천 메타 DB(dbtower)엔 없다(오염 금지 확인용).
+
+## 7. 주간 운영 보고 이메일 구독 (16단계 G6, 선택)
+
+주간 보고 대시보드(`scripts/metabase_bootstrap.py`가 생성)는 값을 판정 컬럼까지 계산하고
+발화는 하지 않는다. 매주 이메일로 받고 싶으면 Metabase 구독(pull→push)을 켠다. 단
+**SMTP가 전제**라 셀프호스트 어플라이언스에 강제하지 않는다(메일 서버가 없는 환경도 있으므로).
+
+1. Metabase 관리자 → 설정 → 이메일(SMTP)에서 발신 서버를 등록한다(호스트·포트·계정·발신 주소).
+2. "주간 운영 보고" 대시보드 → 우상단 공유 → **구독(Subscription)** → 이메일 → 수신자·주기
+   (예: 매주 월 08:00)를 지정한다. 필터(instance 등)를 걸면 그 조건으로 발송된다.
+3. 발화 경계 유지: 구독은 "사람이 보는 요약의 정기 배달"이다. 데이터 급변 즉시 알림(D-day·
+   breach 발생 순간)은 여기서 하지 않는다 — 그건 DBTower reverse ETL(기계 push)의 몫이다.
+
+SMTP를 안 켜면 대시보드는 그대로 `http://localhost:13001`에서 pull로 본다(구독만 비활성).
