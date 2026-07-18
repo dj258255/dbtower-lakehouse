@@ -998,6 +998,13 @@ Metabot이 못 하는 그림. 경계 원칙 유지: **lakehouse는 자체 AI/MCP
 | N3 | 시스템 프롬프트·판단 기준 | DBTower | mart 스키마·컬럼 의미(dbt description 재사용)를 도구 설명에 — 에이전트가 지어내지 않고 실재 컬럼으로 SQL을 짜게. ai-analysis-rules 패턴("근거 없으면 모른다") 승계 | 존재하지 않는 컬럼 질의 시 거부/정정 |
 | N4 | (보류) Metabase 60 공식 MCP | — | DuckDB 드라이버가 60 지원을 릴리스하면 재검토 — 그때는 N2를 공식 MCP로 대체 가능한지 비교 | 드라이버 릴리스 노트 확인 |
 
+> 실행 기록(2026-07-18): **N1~N3 구현 완료 — DBTower 저장소에서**(그쪽 VERIFICATION 103절,
+> 커밋 cdcd9f0). 설계 변경 1건: DuckDB JDBC 직접 의존 대신 **Metabase API 경유**(서빙 계층
+> 재사용 — 의존 0, "Metabase는 DuckLake만 read-only" 계약과 정합). `lakehouse_query`(SELECT
+> 가드·실재 스키마를 도구 설명에)·`lakehouse_card_create`("DBTower AI" 컬렉션 격리) — 라이브:
+> mart_capacity_forecast 질의 6행, DELETE 400 거부, **카드 76 생성·bar 차트 실화면**. N4(Metabase
+> 60 공식 MCP)는 드라이버 대기 그대로.
+
 **정직한 한계**: Metabot 스타일 "Metabase 화면 안 채팅 UI"는 셀프호스트에선 안 된다(Cloud 전용).
 이 경로는 대화가 에이전트(Claude/Discord)에서 일어나고 **결과물이 Metabase에 남는** 형태다.
 기존 DB 연결의 3계층 분업은 불변 — 장기=mart(이 단계), 라이브 7일=DBTower 기존 도구, 관제 대상
