@@ -1007,37 +1007,7 @@ Metabot이 못 하는 그림. 경계 원칙 유지: **lakehouse는 자체 AI/MCP
 
 ---
 
-## 16단계 — 미사용 인덱스 장기 판정: "지워도 되나"는 분기가 답한다 (미착수 — 착수 명세, 2026-07-18)
-
-"이 인덱스 지워도 되나"는 7일 관측으론 답할 수 없다. 재시작-누적 카운터의 순간 관측은
-"지난주 재기동 이후 0회"와 "분기 내내 0회"를 구분하지 못한다. 정확히 이 저장소만 할 수 있는
-판정이다: DBTower가 원료(주기 영속)를 낳고, 여기서 장기 창으로 판정한다.
-
-**전제(DBTower 몫 — 그쪽 ROADMAP "운영 병목 아크 B3")**: `index_usage_snapshot`
-(instance_id·table·index·scans·captured_at, 6시간 주기·7일 보존) + `indexUsageStats()`
-4기종(PG pg_stat_user_indexes / MSSQL dm_db_index_usage_stats / MySQL
-table_io_waits_summary_by_index_usage / Mongo $indexStats), Oracle은 UNSUPPORTED 정직
-(MONITORING USAGE 침습·AWR 라이선스). 값 의미는 "재시작 이후 누적".
-
-| ID | 항목 | 내용 | 검증 기준 |
-|---|---|---|---|
-| X1 | 레지스트리 편입 | 테이블 스펙 레지스트리에 `index_usage_snapshot` 추가 — 워터마크 captured_at, 게이트 프로필은 wait_event와 동형(행 없음이 정상일 수 있는 축은 SKIP) | 첫 offload 멱등·게이트 통과 |
-| X2 | 스테이징·팩트 | 누적 카운터 → 일간 델타는 **2편 first-vs-last + 순리셋 클램프 패턴 그대로 재사용**(재시작 리셋이 음수 델타로 새는 것 방지). `fct_index_daily`(인스턴스·테이블·인덱스·dt·delta_scans) | 리셋 주입 시 클램프 동작 unit test |
-| X3 | 판정 마트 | `mart_index_verdict` — 관측 창(예: 90일) 내 delta_scans 합·마지막 사용일·관측 일수. **판정 컬럼은 조언 어휘로**(candidate_unused 등), 삭제 지시 아님 | 창 미달 인덱스가 "관측 부족"으로 분리 |
-| X4 | 판정 예외 규칙 | (1) unique/FK 제약 백업 인덱스는 스캔 0이어도 제외 — DBTower 스냅샷에 제약 여부 컬럼이 없으면 X1에서 스펙 확장 요청, (2) 레플리카 전용 사용 오판 한계를 판정문에 명시(프라이머리 통계만 수집), (3) 월말·분기 배치용 장주기 인덱스 — 창 90일의 근거와 한계를 함께 표기 | 예외 3종이 판정문에 실제 표기 |
-| X5 | 서빙 | Metabase 카드(후보 목록·마지막 사용일) + `lakehouse_query` 도구로 자연어 질의 가능 확인 | 카드 실물 + MCP 질의 왕복 |
-
-함정: 인덱스명은 재생성 시 동일 이름·다른 실체가 될 수 있다 — (table, index) 키에 최초 관측일을
-함께 들고, 사라진 인덱스는 판정 대상에서 제외(존재 여부는 DBTower describeSchema가 진실).
-
-**정직한 한계**: Metabot 스타일 "Metabase 화면 안 채팅 UI"는 셀프호스트에선 안 된다(Cloud 전용).
-이 경로는 대화가 에이전트(Claude/Discord)에서 일어나고 **결과물이 Metabase에 남는** 형태다.
-기존 DB 연결의 3계층 분업은 불변 — 장기=mart(이 단계), 라이브 7일=DBTower 기존 도구, 관제 대상
-DB 직결=금지(가드레일 1).
-
----
-
-## 16단계 — 판정의 마지막 마일: 플랜 회귀·백업 공백·주간 보고 (미착수 — 2026-07-18 기획)
+## 16단계 — 판정의 마지막 마일: 플랜 회귀·백업 공백·주간 보고 (구현 완료 — 2026-07-18, VERIFICATION 17절)
 
 **상황 가정 셋 (전부 "사람 병목" — 현업 DBA의 시간이 어디서 새는가)**:
 
@@ -1108,9 +1078,52 @@ Metabase(pull) 또는 DBTower(push)의 몫** — 두 번째 알림 시스템을 
   is_partial_week 플래그를 둬 소비자(대시보드)가 반쪽 주를 온전한 주와 비교하지 않게.
 
 **검증 기준(실측 TODO)**: 합성 뒤집힘 주입 → REGRESSED 판정 재현 + 실데이터 plan_snapshot
-13행에 대한 판정 실행(PENDING/NEUTRAL 분포 확인) + 백업 미기록 3개 인스턴스의 행 존재 +
-주간 보고 대시보드 실화면 + CI 그린. 블로그: lakehouse 10편(판정 3종 완성 서사 — "창고가
-있어서 가능한 판정"이 용량·플랜·백업으로 완결) 예정.
+판정 실행 + 백업 미기록 인스턴스의 행 존재 + 주간 보고 대시보드 실화면 + CI 그린.
+
+> 실행 기록(2026-07-18 라이브 실측 — VERIFICATION 17절): **G1~G8 구현·검증 완료.** 마트 3종
+> (mart_plan_regression·mart_backup_rpo·mart_weekly_ops_report) + seed 2종 + unit test 4종
+> (REGRESSED/PENDING/AMBIGUOUS/RPO 산식 고정) + 계약·accepted_values·not_null. 로컬 CI 빌드
+> PASS=79(unit 12), pytest 57 그린.
+>
+> **실데이터 판정(dev 창고)**: (a) **mart_backup_rpo 7행** — 인스턴스 1·2·7은 gap 1일 ok,
+> **3·4·8·32는 no_backup_observed**. 함정(d) 확인 결과 이 4건은 "백업 안 돎"이 아니라 **창고가
+> 아직 그 백업을 안 받음**((ii) 계열) — 원천(DBTower PG)엔 7개 전부 backup_run이 있으나 aux
+> 오프로드(D3 신설)가 fct_backup_daily에 1·2·7의 07-16 하루치만 실었다. 마트가 breach로 단정하지
+> 않고 사실만 실어 정확했다. (b) **mart_weekly_ops_report 7행** — 기종별 top 대기를 정직 병기
+> (MySQL binlog·PG WalSenderMain·Oracle resmgr:cpu·Mongo wiredTiger·MSSQL RESOURCE_SEMAPHORE),
+> is_partial_week=true(주 초). (c) **mart_plan_regression 0행** — 창고의 플랜 이력이 07-16
+> **하루뿐**(aux 플랜 오프로드가 최근 신설, 날짜 간 뒤집힘엔 최소 2일 필요)이라 정직한 빈 결과.
+> CI 픽스처엔 교차일 뒤집힘을 심어 PENDING 1행 산출(초기 실데이터의 모습)을 확인. 실데이터 판정은
+> **시간이 해제**(아래 체크리스트 편입).
+
+---
+
+## 17단계 — 미사용 인덱스 장기 판정: "지워도 되나"는 분기가 답한다 (미착수 — 착수 명세, 2026-07-18)
+
+"이 인덱스 지워도 되나"는 7일 관측으론 답할 수 없다. 재시작-누적 카운터의 순간 관측은
+"지난주 재기동 이후 0회"와 "분기 내내 0회"를 구분하지 못한다. 정확히 이 저장소만 할 수 있는
+판정이다: DBTower가 원료(주기 영속)를 낳고, 여기서 장기 창으로 판정한다.
+
+**전제(DBTower 몫 — 그쪽 ROADMAP "운영 병목 아크 B3")**: `index_usage_snapshot`
+(instance_id·table·index·scans·captured_at, 6시간 주기·7일 보존) + `indexUsageStats()`
+4기종(PG pg_stat_user_indexes / MSSQL dm_db_index_usage_stats / MySQL
+table_io_waits_summary_by_index_usage / Mongo $indexStats), Oracle은 UNSUPPORTED 정직
+(MONITORING USAGE 침습·AWR 라이선스). 값 의미는 "재시작 이후 누적".
+
+| ID | 항목 | 내용 | 검증 기준 |
+|---|---|---|---|
+| X1 | 레지스트리 편입 | 테이블 스펙 레지스트리에 `index_usage_snapshot` 추가 — 워터마크 captured_at, 게이트 프로필은 wait_event와 동형(행 없음이 정상일 수 있는 축은 SKIP) | 첫 offload 멱등·게이트 통과 |
+| X2 | 스테이징·팩트 | 누적 카운터 → 일간 델타는 **2편 first-vs-last + 순리셋 클램프 패턴 그대로 재사용**(재시작 리셋이 음수 델타로 새는 것 방지). `fct_index_daily`(인스턴스·테이블·인덱스·dt·delta_scans) | 리셋 주입 시 클램프 동작 unit test |
+| X3 | 판정 마트 | `mart_index_verdict` — 관측 창(예: 90일) 내 delta_scans 합·마지막 사용일·관측 일수. **판정 컬럼은 조언 어휘로**(candidate_unused 등), 삭제 지시 아님 | 창 미달 인덱스가 "관측 부족"으로 분리 |
+| X4 | 판정 예외 규칙 | (1) unique/FK 제약 백업 인덱스는 스캔 0이어도 제외 — DBTower 스냅샷에 제약 여부 컬럼이 없으면 X1에서 스펙 확장 요청, (2) 레플리카 전용 사용 오판 한계를 판정문에 명시(프라이머리 통계만 수집), (3) 월말·분기 배치용 장주기 인덱스 — 창 90일의 근거와 한계를 함께 표기 | 예외 3종이 판정문에 실제 표기 |
+| X5 | 서빙 | Metabase 카드(후보 목록·마지막 사용일) + `lakehouse_query` 도구로 자연어 질의 가능 확인 | 카드 실물 + MCP 질의 왕복 |
+
+함정: 인덱스명은 재생성 시 동일 이름·다른 실체가 될 수 있다 — (table, index) 키에 최초 관측일을
+함께 들고, 사라진 인덱스는 판정 대상에서 제외(존재 여부는 DBTower describeSchema가 진실).
+
+**정직한 한계**: 사용 통계는 프라이머리 기준이라 레플리카 전용 스캔을 못 본다 — 판정을 "삭제"가
+아니라 "후보(candidate_unused)"까지만 내는 이유다. 전제(B3 index_usage_snapshot 공급)가 서야
+착수한다 — 그 전엔 X1 스펙 협의까지.
 
 ---
 
@@ -1124,6 +1137,8 @@ Metabase(pull) 또는 DBTower(push)의 몫** — 두 번째 알림 시스템을 
 | 롤링 회귀 랭킹(실데이터) | 이력 recent 7 + prior 30일 | ~08-17 | 자동 — 마트가 채워짐(확인만) |
 | mart_baseline_longterm 채움 | (dow,hour) 버킷 관측 ≥ 8 = 약 8주 | ~09-08 | 되쓰기 정례화 + deadman 편입 결정 |
 | **계절성 오탐 억제 라이브 실증** | 위 + DBTower 4주 창 실버킷 | ~09-08 | 합성 주입 없이 "월요일 피크 무경보" 실측 → DBTower VERIFICATION·블로그 |
+| **플랜 회귀 실데이터 판정(16단계)** | plan_snapshot aux 오프로드 이력 ≥ 2일 | ~07-19 | 자동 — mart_plan_regression이 뒤집힘을 잡기 시작(확인만). 초기엔 PENDING 다수 |
+| **백업 공백 전 인스턴스 커버(16단계)** | backup_run aux 오프로드가 7기종 전부 누적 | ~07-20 | no_backup_observed가 실제 미백업만 남게 좁혀짐(현재는 창고 미수집분 포함) |
 | **C6 용량 대시보드** | capacity learning 해제(관측 14일) | ~08-01 | metabase_bootstrap 패턴으로 카드 구축 + 실화면 → VERIFICATION·7편류 보강 |
 | wait 델타 채움 | ~~수 사이클~~ | **해제됨(07-18)** | 21사이클 재추출로 델타>0 52이벤트 — 전부 누적 기종에서만(PG 델타 0 = 스냅샷 기종 정직성의 라이브 증명) |
 | MSSQL volume | ~~다음 사이클~~ | **해제됨(07-18)** | 1007GB/774GB 실측 완료 |

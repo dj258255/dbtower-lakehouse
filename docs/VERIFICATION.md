@@ -1111,3 +1111,43 @@ CI: 픽스처 5소스 확장 — 로컬 전체 재현 dbt build PASS=52
 정직한 표기: wait 팩트의 delta는 하루 1관측이면 0(first=last) — 사이클이 쌓여야
 발생량이 찬다. MSSQL 볼륨 라이브 값은 수집 시점의 대상 접속 불가(환경 히컵)로 이번
 사이클 미확인 — Oracle로 경로 검증, MSSQL은 다음 사이클의 몫.
+
+## 17. 16단계 — 판정 마트 3종 (플랜 회귀·백업 공백·주간 보고, 2026-07-18)
+
+이미 내린 데이터를 판정 컬럼까지 밀어붙였다(신규 수집 0). "느려졌다는 신고 → 플랜 이력
+30분 뒤지기", "복구하려다 백업 공백 발견", "월요일 보고서 수작업" 세 병목을 마트로 접는다.
+
+```
+산식 고정(unit test 4종, CI):
+  test_plan_regression_flip_regressed   — A→B 뒤집힘 후 10→30ms(3배)·후호출 500 → REGRESSED
+  test_plan_regression_pending_no_after — 후 관측 미도래 → PENDING(지어내지 않음)
+  test_plan_regression_ambiguous_adjacent_flip — 비교창(±3일) 안 재뒤집힘 → AMBIGUOUS
+  test_backup_rpo_ok_breach_missing     — gap 1 ok / gap 9 breach / 성공없음 no_backup_observed
+계약·accepted_values(verdict 5종·rpo_status 3종)·not_null — 전부 PASS
+로컬 전체 재현 dbt build PASS=79(unit 12) · pytest 57 그린
+발행: 10→13테이블(mart_plan_regression·mart_backup_rpo·mart_weekly_ops_report 편입)
+```
+
+라이브 실측(dev 창고):
+
+```
+mart_backup_rpo 7행:
+  inst 1·2·7  gap 1일 → ok
+  inst 3·4·8·32  성공 백업 관측 없음 → no_backup_observed
+  함정(d) 확인: 원천(DBTower PG) backup_run엔 7기종 전부 성공 이력 있음.
+    창고 fct_backup_daily엔 1·2·7의 07-16 하루치만(aux 오프로드 D3 신설분).
+    → 4건은 "백업 안 돎"이 아니라 "창고 미수집"((ii)). 마트가 breach 단정 대신
+      no_backup_observed로 사실만 실어 정확 — 기종 축 없는 창고의 정직 한계 그대로.
+mart_weekly_ops_report 7행 — 기종별 top 대기 정직 병기:
+  1 MySQL wait/io/file/sql/binlog · 4 PG WalSenderMain · 8 Oracle resmgr:cpu quantum
+  7 Mongo wiredTiger.concurrentTransactions · 3·32 MSSQL RESOURCE_SEMAPHORE_QUERY_COMPILE
+  is_partial_week=true(주 초, 반쪽 주 표시)
+mart_plan_regression 0행 — 창고 플랜 이력이 07-16 하루뿐(aux 플랜 오프로드 최근 신설).
+  날짜 간 뒤집힘엔 최소 2일 필요 → 정직한 빈 결과. CI 픽스처엔 교차일 뒤집힘 심어
+  PENDING 1행 산출로 파이프라인 확인(초기 실데이터의 모습). 시간이 해제(~07-19).
+data test 9종 실데이터에서도 전부 PASS.
+```
+
+정직한 표기: 판정의 "실데이터 완성"은 aux 오프로드(플랜·백업) 이력이 쌓여야 온다 —
+ROADMAP "시간이 해제하는 체크리스트"에 해제 조건·예상일 명문화. 지금 마트는 정직하게
+비거나(플랜) 창고 커버리지만큼만 판정한다(백업).
