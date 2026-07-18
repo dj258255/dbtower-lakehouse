@@ -37,6 +37,8 @@ MART_TABLES = (
     "mart_query_regression",
     "fct_query_hourly",
     "mart_baseline_longterm",
+    "fct_size_daily",
+    "mart_capacity_forecast",
 )
 
 # dbt가 마트를 짓는 DuckDB 파일. 컨테이너에선 compose가 절대경로로 덮어쓴다.

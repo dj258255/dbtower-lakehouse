@@ -1,0 +1,13 @@
+version: 2
+seeds:
+  - name: capacity_thresholds
+    description: >
+      인스턴스별 용량 임계(13단계 임계 원천 ① — 사용자 설정). kind가 알림의 의미를 정한다:
+      physical=포화 D-day(온프레미스) / autoscale_max=상한 도달 D-day(RDS류) /
+      budget=비용 추정 / (행 없음)=none, 증가율만. 값은 dev 데모용 — 셀프호스터가
+      자기 환경으로 교체한다(threshold_bytes 단위: 바이트).
+    config:
+      column_types:
+        instance_id: bigint
+        threshold_bytes: bigint
+        threshold_kind: varchar

@@ -50,3 +50,37 @@ sources:
           - name: dt
             data_type: varchar
             description: "Hive 파티션 논리 날짜(UTC). 파일 경로 dt=YYYY-MM-DD에서 VARCHAR로 읽힘."
+      - name: size_snapshot
+        description: >
+          오브젝트 크기 시계열(13단계 원료). DBTower SizeSnapshotJob이 6시간 주기로 영속한
+          tableStats — offload가 raw/size_snapshot/ 파티션으로 내린다. volume_*·max_bytes는
+          임계 원천 ②(기종이 아는 볼륨)로 현재 NULL(후속 공급, 계약 nullable).
+        meta:
+          external_location: >-
+            {{ env_var('RAW_SIZE_SNAPSHOT_LOCATION',
+               "read_parquet('s3://lakehouse/raw/size_snapshot/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)") }}
+        columns:
+          - name: id
+            data_type: bigint
+          - name: instance_id
+            data_type: bigint
+          - name: captured_at
+            data_type: timestamp
+          - name: object_type
+            data_type: varchar
+          - name: object_name
+            data_type: varchar
+          - name: row_estimate
+            data_type: bigint
+          - name: data_bytes
+            data_type: bigint
+          - name: index_bytes
+            data_type: bigint
+          - name: volume_total_bytes
+            data_type: bigint
+          - name: volume_available_bytes
+            data_type: bigint
+          - name: max_bytes
+            data_type: bigint
+          - name: dt
+            data_type: varchar

@@ -28,10 +28,11 @@
 | `query_snapshot` | `captured_at` | 불변 | 4축 전부 | 주 파이프라인 |
 | `backup_run` | `started_at` | **사후 변이**(verify/remote가 나중에 UPDATE) → **D+1 스냅샷 계약**: 어제 dt를 오늘 뽑아도 이후 갱신될 수 있다. 워터마크는 불변인 `started_at` | 정합·드리프트만(저빈도 — 전 인스턴스 백업이 정상 아님 → completeness 오탐, 이벤트성 → freshness 오탐) | 추출 중 |
 | `plan_snapshot` | `captured_at` | 행은 불변, **보존이 카운트 기반**(쿼리당 최신 20개 스윕) → D2(DBTower: 시간 기반 보존 병행) 전까지 당일 추출분 불완전 가능 — 정직 표기 | 정합·드리프트만 | 추출 중 |
+| `size_snapshot` | `captured_at` | 불변(6시간 주기 append, 7일 보존) | 정합·드리프트만(completeness=격리 인스턴스, freshness=저빈도 주기라 경계 근접 전제 부적합) | 추출 중(DBTower V26, 2026-07-18 편입). `volume_*`·`max_bytes`는 임계 원천 ②로 계약상 nullable — 현 수집기는 NULL(지어내지 않음) |
 | `wait_event_snapshot` | `captured_at` | 불변(5분 주기 append, 7일 보존) | 정합·신선도·드리프트(completeness만 끔 — 미지원/무대기 기종은 사이클에 행이 없는 게 정상) | 추출 중(D1 — DBTower V25, 2026-07-18 편입). **기종별 의미 차이 계승**: wait_count·total_ms가 MySQL/MSSQL/Oracle=누적, PG=현재 스냅샷, Mongo=대기 큐 — 마트가 기종별로 해석해야 한다 |
 
 프로필이 끈 축은 게이트 보고서에 **SKIP**으로 남는다(안 잰 것을 잰 척하지 않는다).
-GRANT 목록: `GRANT SELECT ON query_snapshot, database_instance, backup_run, plan_snapshot, wait_event_snapshot TO lakehouse_reader;`
+GRANT 목록: `GRANT SELECT ON query_snapshot, database_instance, backup_run, plan_snapshot, wait_event_snapshot, size_snapshot TO lakehouse_reader;`
 
 ### 1-2. 되쓰기(writeback) — 분석계→원천 방향의 유일한 쓰기 (Phase 14 D7)
 

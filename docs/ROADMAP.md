@@ -798,6 +798,17 @@ GB/일은 가장 예측 가능한 메트릭이라 선형+계절 보정으로 충
 **검증 기준(실측 TODO)**: 합성 증가 데이터(선형+계절+리셋 주입)로 기울기·잔여일 정확, 리셋
 클램프·계단 대응·데이터 부족 표기 라이브. 실데이터로 증가율 대시보드.
 
+> 실행 기록(2026-07-18 라이브 실측 — VERIFICATION 15절): **C1~C5 완료, C6(Metabase 대시보드)은
+> 이력이 쌓이면.** DBTower가 V26 `size_snapshot` + SizeSnapshotJob(6시간 주기·7일 보존)을 낳아
+> (그쪽 102절) 공급이 열렸다 — 첫 사이클 6인스턴스 43오브젝트 실측. lakehouse: 레지스트리
+> 편입(43행 멱등·게이트 통과), `stg_size_snapshot`→`fct_size_daily`(하루 대푯값=마지막 관측,
+> 증분 워터마크 패턴)→`mart_capacity_forecast`(regr_slope·판정 컬럼·발화 없음) +
+> `seeds/capacity_thresholds`(임계 원천 ①, kind별 의미). **산식은 unit test 기지값으로 고정**:
+> 선형 성장 20일(+10MB/일, 임계 2000MB) → slope=10MB/일·잔여 81일·d90 정확, 역성장 →
+> days NULL·stable_or_shrinking(지어내지 않음). 실데이터는 이력 1dt라 전 인스턴스
+> learning=True — 정직한 초기 상태(이력이 쌓이면 찬다). publish 6마트 편입, CI 픽스처에
+> size 소스 추가(로컬 재현 PASS=44). volume_*(임계 원천 ②)은 수집기 미공급(NULL) — 후속.
+
 **잔여**: 정교한 시계열 모델(ARIMA/Prophet)은 선형이 실측으로 부족함을 확인하면. IOPS·CPU 등
 크기 외 자원 예측은 별개 축. lakehouse 자체 AI/MCP는 안 함(아래 "안 하기로 한 것").
 

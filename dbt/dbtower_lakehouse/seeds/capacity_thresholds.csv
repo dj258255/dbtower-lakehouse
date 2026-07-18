@@ -1,0 +1,8 @@
+instance_id,threshold_bytes,threshold_kind
+1,1073741824,physical
+2,1073741824,physical
+3,1073741824,physical
+4,1073741824,physical
+7,1073741824,physical
+8,1073741824,physical
+32,5368709120,autoscale_max

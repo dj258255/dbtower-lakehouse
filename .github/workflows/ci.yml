@@ -58,4 +58,5 @@ jobs:
         env:
           # 운영 소스(MinIO s3://)를 CI 픽스처 parquet로 대체한다. 운영 경로는 불변.
           RAW_SNAPSHOT_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
+          RAW_SIZE_SNAPSHOT_LOCATION: "read_parquet('${{ github.workspace }}/.ci_tmp/lh_fixture_size/dt=*/instance_id=*/*.parquet', hive_partitioning = 1)"
         run: dbt build --profiles-dir . --project-dir .

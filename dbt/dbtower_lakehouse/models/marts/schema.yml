@@ -200,3 +200,30 @@ models:
       - name: computed_at
         data_type: timestamp with time zone
         description: "이 베이스라인 계산 시각."
+
+  # --- Phase 13 — 크기 팩트·용량 예측 ---
+  - name: fct_size_daily
+    description: >
+      일별 오브젝트 크기 팩트(Phase 13). 크기는 절대값이라 하루 대푯값 = 그날 마지막
+      관측(6시간 주기 중 최신). 증분 delete+insert·워터마크 리터럴(검증된 패턴).
+    columns:
+      - name: instance_id
+        tests: [not_null]
+      - name: object_name
+        tests: [not_null]
+      - name: dt
+        tests: [not_null]
+      - name: total_bytes
+        description: "data_bytes + index_bytes."
+  - name: mart_capacity_forecast
+    description: >
+      용량 예측 마트(Phase 13) — 최근 N일(기본 30) 선형 추세(regr_slope)로 임계까지
+      잔여일 판정 컬럼을 계산한다. 발화는 안 한다(소비 = Metabase pull / DBTower
+      reverse ETL push). 임계는 seeds/capacity_thresholds(원천 ①) — kind가 의미를
+      정한다(physical/autoscale_max/budget/none). 관측 14일 미만은 learning(지어내지
+      않음). 단기(시간~일) 디스크 ETA는 DBTower 78절의 몫 — 지평 경계.
+    columns:
+      - name: instance_id
+        tests: [not_null]
+      - name: risk_flag
+        description: "learning | stable_or_shrinking | growth_only | d30 | d90 | ok."

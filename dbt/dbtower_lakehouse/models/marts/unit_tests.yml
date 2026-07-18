@@ -74,3 +74,72 @@ unit_tests:
     expect:
       rows:
         - {instance_id: 1, query_id: "qA", recent_latency_ms: 20.0, prior_latency_ms: 10.0, latency_increase_ms: 10.0, latency_increase_pct: 100.0, recent_days_seen: 1, prior_days_seen: 1}
+
+  # --- Phase 13 (C5) — 용량 예측 산식을 합성 선형 성장으로 고정 ---
+  - name: test_capacity_forecast_linear_growth
+    model: mart_capacity_forecast
+    description: >
+      20일 선형 성장(시작 1000MB, +10MB/일) + 임계 2000MB(physical) 주입 —
+      기울기 regr_slope=10MB/일, 잔여일 floor((2000-1190)/10)=81, risk=d90이 나와야 한다.
+      학습 게이트(14일)도 통과 상태. 산식이 지어낸 값이 아님을 기지값으로 고정한다.
+    given:
+      - input: ref('fct_size_daily')
+        rows:
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-01", total_bytes: 1000000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-02", total_bytes: 1010000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-03", total_bytes: 1020000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-04", total_bytes: 1030000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-05", total_bytes: 1040000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-06", total_bytes: 1050000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-07", total_bytes: 1060000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-08", total_bytes: 1070000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-09", total_bytes: 1080000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-10", total_bytes: 1090000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-11", total_bytes: 1100000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-12", total_bytes: 1110000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-13", total_bytes: 1120000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-14", total_bytes: 1130000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-15", total_bytes: 1140000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-16", total_bytes: 1150000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-17", total_bytes: 1160000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-18", total_bytes: 1170000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-19", total_bytes: 1180000000}
+          - {instance_id: 99, object_type: "table", object_name: "t", dt: "2026-01-20", total_bytes: 1190000000}
+      - input: ref('capacity_thresholds')
+        rows:
+          - {instance_id: 99, threshold_bytes: 2000000000, threshold_kind: "physical"}
+    expect:
+      rows:
+        - {instance_id: 99, days_observed: 20, learning: false, current_bytes: 1190000000,
+           slope_bytes_per_day: 10000000.0, threshold_kind: "physical",
+           days_to_threshold: 81, risk_flag: "d90"}
+
+  - name: test_capacity_forecast_shrinking_no_dday
+    model: mart_capacity_forecast
+    description: >
+      역성장(줄어드는 DB)이면 잔여일을 지어내지 않는다 — days_to_threshold NULL,
+      risk=stable_or_shrinking. 음수 기울기 클램프의 산식판.
+    given:
+      - input: ref('fct_size_daily')
+        rows:
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-01", total_bytes: 2000000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-02", total_bytes: 1990000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-03", total_bytes: 1980000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-04", total_bytes: 1970000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-05", total_bytes: 1960000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-06", total_bytes: 1950000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-07", total_bytes: 1940000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-08", total_bytes: 1930000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-09", total_bytes: 1920000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-10", total_bytes: 1910000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-11", total_bytes: 1900000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-12", total_bytes: 1890000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-13", total_bytes: 1880000000}
+          - {instance_id: 98, object_type: "table", object_name: "t", dt: "2026-01-14", total_bytes: 1870000000}
+      - input: ref('capacity_thresholds')
+        rows:
+          - {instance_id: 98, threshold_bytes: 3000000000, threshold_kind: "physical"}
+    expect:
+      rows:
+        - {instance_id: 98, days_observed: 14, learning: false,
+           days_to_threshold: null, risk_flag: "stable_or_shrinking"}

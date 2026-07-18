@@ -187,8 +187,50 @@ _WAIT_EVENT_SNAPSHOT = TableSpec(
     },
 )
 
+# 오브젝트 크기 — 용량 예측(13단계)의 원료(DBTower V26, 2026-07-18 편입). 6시간 주기라
+# freshness의 "경계 근접" 전제(연속 수집)가 안 맞아 끈다 — WARN 소음 방지, 사유는 SKIP으로 남음.
+# volume_*·max_bytes는 임계 원천 ②(기종이 아는 볼륨) — 현 수집기는 NULL(후속 아크, 계약 nullable).
+_SIZE_SNAPSHOT = TableSpec(
+    name="size_snapshot",
+    select_columns=(
+        "id", "instance_id", "captured_at", "object_type", "object_name",
+        "row_estimate", "data_bytes", "index_bytes",
+        "volume_total_bytes", "volume_available_bytes", "max_bytes",
+    ),
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("object_type", pa.string(), nullable=False),
+        pa.field("object_name", pa.string(), nullable=False),
+        pa.field("row_estimate", pa.int64(), nullable=False),
+        pa.field("data_bytes", pa.int64(), nullable=False),
+        pa.field("index_bytes", pa.int64(), nullable=False),
+        pa.field("volume_total_bytes", pa.int64(), nullable=True),
+        pa.field("volume_available_bytes", pa.int64(), nullable=True),
+        pa.field("max_bytes", pa.int64(), nullable=True),
+    ]),
+    watermark_col="captured_at",
+    raw_prefix="raw/size_snapshot",
+    gate=GateProfile(completeness=False, freshness=False),
+    expected_pg_columns={
+        "id": "bigint",
+        "instance_id": "bigint",
+        "captured_at": "timestamp without time zone",
+        "object_type": "character varying",
+        "object_name": "character varying",
+        "row_estimate": "bigint",
+        "data_bytes": "bigint",
+        "index_bytes": "bigint",
+        "volume_total_bytes": "bigint",
+        "volume_available_bytes": "bigint",
+        "max_bytes": "bigint",
+    },
+)
+
 REGISTRY: dict[str, TableSpec] = {
-    s.name: s for s in (_QUERY_SNAPSHOT, _BACKUP_RUN, _PLAN_SNAPSHOT, _WAIT_EVENT_SNAPSHOT)
+    s.name: s
+    for s in (_QUERY_SNAPSHOT, _BACKUP_RUN, _PLAN_SNAPSHOT, _WAIT_EVENT_SNAPSHOT, _SIZE_SNAPSHOT)
 }
 
 # 주 파이프라인(게이트 4축·dbt·publish·heartbeat)이 도는 테이블.

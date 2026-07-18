@@ -115,29 +115,90 @@ def build(out_dir: str) -> int:
     return files
 
 
-def register_source_view(duckdb_file: str, fixture_dir: str) -> None:
-    """dbt unit test가 introspect할 수 있도록 raw.query_snapshot을 뷰로 등록한다.
+def build_size_fixture(out_dir: str) -> int:
+    """size_snapshot 픽스처(Phase 13) — 용량 마트가 CI에서 MinIO 없이 돌게 한다.
+
+    2일치 × 2인스턴스, 크기 절대값 + 하루 안 2관측(마지막 관측이 대푯값인지 검증 재료).
+    """
+    schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("instance_id", pa.int64(), nullable=False),
+        pa.field("captured_at", pa.timestamp("us"), nullable=False),
+        pa.field("object_type", pa.string(), nullable=False),
+        pa.field("object_name", pa.string(), nullable=False),
+        pa.field("row_estimate", pa.int64(), nullable=False),
+        pa.field("data_bytes", pa.int64(), nullable=False),
+        pa.field("index_bytes", pa.int64(), nullable=False),
+        pa.field("volume_total_bytes", pa.int64(), nullable=True),
+        pa.field("volume_available_bytes", pa.int64(), nullable=True),
+        pa.field("max_bytes", pa.int64(), nullable=True),
+    ])
+    rows = [
+        # (dt, inst, captured_at, name, rows, data, index) — 하루 2관측(06시·23시), 마지막이 대푯값.
+        ("2026-01-01", 1, "2026-01-01 06:00:00", "orders", 1000, 100_000, 10_000),
+        ("2026-01-01", 1, "2026-01-01 23:00:00", "orders", 1100, 110_000, 11_000),
+        ("2026-01-02", 1, "2026-01-02 23:00:00", "orders", 1200, 120_000, 12_000),
+        ("2026-01-01", 2, "2026-01-01 23:00:00", "events", 5000, 500_000, 50_000),
+        ("2026-01-02", 2, "2026-01-02 23:00:00", "events", 5100, 510_000, 51_000),
+    ]
+    out = Path(out_dir)
+    by_part: dict[tuple[str, int], list] = {}
+    for i, (dt, iid, cap, name, n, d, ix) in enumerate(rows, start=1):
+        by_part.setdefault((dt, iid), []).append((i, iid, cap, name, n, d, ix))
+    files = 0
+    for (dt, iid), part in by_part.items():
+        pdir = out / f"dt={dt}" / f"instance_id={iid}"
+        pdir.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_arrays([
+            pa.array([r[0] for r in part], pa.int64()),
+            pa.array([r[1] for r in part], pa.int64()),
+            pa.array([datetime.strptime(r[2], "%Y-%m-%d %H:%M:%S") for r in part],
+                     pa.timestamp("us")),
+            pa.array(["table"] * len(part), pa.string()),
+            pa.array([r[3] for r in part], pa.string()),
+            pa.array([r[4] for r in part], pa.int64()),
+            pa.array([r[5] for r in part], pa.int64()),
+            pa.array([r[6] for r in part], pa.int64()),
+            pa.array([None] * len(part), pa.int64()),
+            pa.array([None] * len(part), pa.int64()),
+            pa.array([None] * len(part), pa.int64()),
+        ], schema=schema)
+        pq.write_table(table, pdir / "part-000.parquet", compression="zstd")
+        files += 1
+    print(f"size 픽스처 생성: {files}개 파티션 파일 → {out}")
+    return files
+
+
+def register_source_view(duckdb_file: str, fixture_dir: str, size_fixture_dir: str) -> None:
+    """dbt unit test가 introspect할 수 있도록 raw 소스들을 뷰로 등록한다.
 
     외부 read_parquet 소스는 물리 relation이 없어 dbt-duckdb가 컬럼을 못 읽는다.
     픽스처 parquet를 가리키는 뷰를 dbt가 쓰는 바로 그 파일에 미리 만들어 둔다.
     """
     import duckdb  # noqa: PLC0415 — 선택 경로에서만 필요.
 
-    glob = f"{fixture_dir}/dt=*/instance_id=*/*.parquet"
     con = duckdb.connect(duckdb_file)
     try:
         con.execute("CREATE SCHEMA IF NOT EXISTS raw")
         con.execute(
             "CREATE OR REPLACE VIEW raw.query_snapshot AS "
-            f"SELECT * FROM read_parquet('{glob}', hive_partitioning = 1)"
+            f"SELECT * FROM read_parquet('{fixture_dir}/dt=*/instance_id=*/*.parquet', "
+            "hive_partitioning = 1)"
+        )
+        con.execute(
+            "CREATE OR REPLACE VIEW raw.size_snapshot AS "
+            f"SELECT * FROM read_parquet('{size_fixture_dir}/dt=*/instance_id=*/*.parquet', "
+            "hive_partitioning = 1)"
         )
     finally:
         con.close()
-    print(f"raw.query_snapshot 뷰 등록 → {duckdb_file}")
+    print(f"raw.query_snapshot·raw.size_snapshot 뷰 등록 → {duckdb_file}")
 
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "/tmp/lh_fixture"
     build(target)
+    size_target = target + "_size"
+    build_size_fixture(size_target)
     if len(sys.argv) > 2:
-        register_source_view(sys.argv[2], target)
+        register_source_view(sys.argv[2], target, size_target)
