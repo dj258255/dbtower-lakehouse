@@ -134,6 +134,17 @@ DBTower가 Prometheus면 이건 Thanos다(7일 뒤 사라질 쿼리 스냅샷을
 개발용 `docker-compose.yml`은 내 데모 스택에 얹히지만, `docker-compose.standalone.yml`은
 자체 MinIO·카탈로그 PG·Metabase를 번들해 **당신 DBTower 하나만 가리키면** 독립 기동한다.
 
+파이프라인+BI 스택이라 커스텀 이미지가 둘이다 — `dbtower-lakehouse-airflow`(오케스트레이터,
+Airflow+dbt 별도 venv+DuckDB)와 `dbtower-lakehouse-metabase`(DuckDB 드라이버 번들 BI). 둘 다
+**GHCR에 멀티아치(amd64+arm64)로 게시**되므로, 아래 명령 앞에 한 번 `pull` 하면 빌드 도구 없이
+그대로 뜬다(compose 파일만 있으면 됨). 소스에서 직접 빌드하려면 `pull` 대신 `build`.
+
+```bash
+# 게시된 이미지 받아 실행 (빌드 없이)
+docker compose -f docker-compose.standalone.yml pull
+# 소스에서 빌드하려면: docker compose -f docker-compose.standalone.yml build
+```
+
 ### 데모 (내 DBTower 없이 전체 파이프라인 체험)
 
 ```bash

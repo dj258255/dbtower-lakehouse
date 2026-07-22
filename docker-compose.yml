@@ -16,7 +16,7 @@ x-airflow-common: &airflow-common
   # Phase 6: 커스텀 이미지(Dockerfile) — 추출 의존성 + 분리 venv의 dbt를 굽는다.
   # _PIP_ADDITIONAL_REQUIREMENTS(기동 때마다 pip)는 비재현적이라 폐기했다.
   build: .
-  image: lakehouse-airflow:latest
+  image: ghcr.io/dj258255/dbtower-lakehouse-airflow:latest
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
@@ -119,7 +119,7 @@ services:
   # 초기 설정·연결·대시보드 재현: scripts/metabase_bootstrap.py (docs/RUNBOOK.md 5절).
   metabase:
     build: ./metabase
-    image: lakehouse-metabase:latest
+    image: ghcr.io/dj258255/dbtower-lakehouse-metabase:latest
     container_name: lakehouse-metabase
     ports:
       - "13001:3000"   # 13000은 dbtower-grafana가 사용 중

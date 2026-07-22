@@ -18,7 +18,7 @@
 
 x-airflow-common: &airflow-common
   build: .
-  image: lakehouse-airflow:latest
+  image: ghcr.io/dj258255/dbtower-lakehouse-airflow:latest
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_META_PASSWORD:?set in .env}@airflow-postgres/airflow
@@ -175,7 +175,7 @@ services:
   # --- 대시보드: Metabase(앱 DB를 번들 PG로 — 프로덕션 위생) ---
   metabase:
     build: ./metabase
-    image: lakehouse-metabase:latest
+    image: ghcr.io/dj258255/dbtower-lakehouse-metabase:latest
     container_name: lh-standalone-metabase
     environment:
       MB_DB_TYPE: postgres

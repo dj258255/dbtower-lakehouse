@@ -1,0 +1,93 @@
+name: Release
+
+# v1.2.3 형태의 태그를 push 하면 두 이미지(airflow·metabase)를 빌드해 GHCR 에 게시한다.
+#   git tag v1.0.0 && git push origin v1.0.0
+# 게시는 사용자가 태그를 push 할 때만 일어난다(수동 트리거도 허용).
+#
+# 왜 이미지가 둘인가: 파이프라인+BI 스택이라 서비스가 둘이다.
+#   - lakehouse-airflow  : 오케스트레이터(Airflow+dbt 별도 venv+DuckDB). 컨텍스트 .
+#   - lakehouse-metabase : DuckDB 드라이버 번들 BI(공식 Metabase 는 Alpine/musl 이라
+#                          DuckDB JDBC 로드 실패 → 드라이버 저장소 권장 Debian 위에 얹음). 컨텍스트 ./metabase
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  # 게시 전 게이트 — ci.yml 과 같은 3관문(ruff·pytest·dbt parse). 하나라도 깨지면 이미지 안 올린다.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ruff
+      - name: ruff (린트)
+        run: ruff check .
+      - name: pytest (순수 로직)
+        run: pytest -q
+      - name: dbt deps / parse
+        working-directory: dbt/dbtower_lakehouse
+        run: |
+          dbt deps --profiles-dir . --project-dir .
+          dbt parse --profiles-dir . --project-dir .
+
+  # 두 이미지를 한 잡에서 matrix 로 빌드·푸시. 게이트 통과 후에만.
+  images:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR push 에 필요
+    strategy:
+      matrix:
+        include:
+          - name: airflow
+            context: .
+          - name: metabase
+            context: ./metabase
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 크로스 빌드용 QEMU (ARM 서버·Apple Silicon 사용자가 에뮬레이션 없이 돌게)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # gha 캐시(cache-to type=gha)는 기본 docker 드라이버가 지원하지 않는다 —
+      # docker-container 드라이버를 쓰는 buildx 셋업이 필요
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 태그(v1.0.0)에서 1.0.0, 1.0, 1, latest 태그를 자동 생성.
+      # 이미지명: ghcr.io/<owner>/dbtower-lakehouse-<airflow|metabase>
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build and push (${{ matrix.name }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
